@@ -1,4 +1,4 @@
-package com.uber.api.driver_service;
+package com.uber.api.driver.service;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;

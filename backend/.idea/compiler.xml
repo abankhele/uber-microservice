@@ -15,14 +15,16 @@
           <entry name="$MAVEN_REPOSITORY$/org/projectlombok/lombok/1.18.30/lombok-1.18.30.jar" />
         </processorPath>
         <module name="shared" />
-        <module name="customer-service" />
         <module name="payment-service" />
+        <module name="customer-service" />
+        <module name="driver-service" />
       </profile>
     </annotationProcessing>
   </component>
   <component name="JavacSettings">
     <option name="ADDITIONAL_OPTIONS_OVERRIDE">
       <module name="customer-service" options="-parameters" />
+      <module name="driver-service" options="-parameters" />
       <module name="payment-service" options="-parameters" />
       <module name="shared" options="-parameters" />
     </option>

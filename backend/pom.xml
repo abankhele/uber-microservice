@@ -28,6 +28,7 @@
         <module>shared</module>
         <module>customer-service</module>
         <module>payment-service</module>
+        <module>driver-service</module>
     </modules>
 
     <dependencies>
