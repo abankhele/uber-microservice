@@ -27,6 +27,7 @@
     <modules>
         <module>shared</module>
         <module>customer-service</module>
+        <module>payment-service</module>
     </modules>
 
     <dependencies>
