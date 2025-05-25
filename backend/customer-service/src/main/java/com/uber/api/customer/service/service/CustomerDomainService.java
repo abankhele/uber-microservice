@@ -8,4 +8,6 @@ public interface CustomerDomainService {
     RideStatusResponse callTaxi(CallTaxiRequest request);
     RideStatusResponse getRideStatus(String customerEmail);
     void completeRide(String customerEmail);
+    void startRide(String customerEmail);
+
 }

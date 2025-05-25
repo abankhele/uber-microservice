@@ -100,9 +100,10 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     public void completeRide(String customerEmail) {
         log.info("Completing ride for customer: {}", customerEmail);
 
-        // Find active ride
+        // Find active ride (either DRIVER_ASSIGNED or RIDE_STARTED)
         RideRequest activeRide = rideRequestRepository
                 .findByCustomerEmailAndStatus(customerEmail, RideStatus.RIDE_STARTED)
+                .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.DRIVER_ASSIGNED))
                 .orElseThrow(() -> new RuntimeException("No active ride found for customer: " + customerEmail));
 
         // Update ride status
@@ -118,8 +119,15 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         customer.setCurrentRideRequestId(null);
         customerRepository.save(customer);
 
+        // Reset driver status
+        if (activeRide.getDriverEmail() != null) {
+            // You could add a call to driver service to reset driver status
+            log.info("Driver {} should be notified that ride is completed", activeRide.getDriverEmail());
+        }
+
         log.info("Ride completed successfully for customer: {}", customerEmail);
     }
+
 
     private Customer findOrCreateCustomer(String email) {
         return customerRepository.findByEmail(email)
@@ -216,4 +224,21 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             throw new RuntimeException("Failed to save event to outbox", e);
         }
     }
+    @Override
+    @Transactional
+    public void startRide(String customerEmail) {
+        log.info("Starting ride for customer: {}", customerEmail);
+
+        // Find ride with DRIVER_ASSIGNED status
+        RideRequest assignedRide = rideRequestRepository
+                .findByCustomerEmailAndStatus(customerEmail, RideStatus.DRIVER_ASSIGNED)
+                .orElseThrow(() -> new RuntimeException("No assigned ride found for customer: " + customerEmail));
+
+        // Update ride status to RIDE_STARTED
+        assignedRide.setStatus(RideStatus.RIDE_STARTED);
+        rideRequestRepository.save(assignedRide);
+
+        log.info("Ride started successfully for customer: {}", customerEmail);
+    }
+
 }

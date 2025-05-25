@@ -47,6 +47,20 @@ public class CustomerController {
             return ResponseEntity.badRequest().build();
         }
     }
+    @PostMapping("/start/{customerEmail}")
+    public ResponseEntity<String> startRide(@PathVariable String customerEmail) {
+        log.info("Starting ride for customer: {}", customerEmail);
+
+        try {
+            customerDomainService.startRide(customerEmail);
+            return ResponseEntity.ok("Ride started successfully");
+
+        } catch (Exception e) {
+            log.error("Error starting ride for customer: {}", customerEmail, e);
+            return ResponseEntity.badRequest().body("Failed to start ride: " + e.getMessage());
+        }
+    }
+
 
     @PostMapping("/complete/{customerEmail}")
     public ResponseEntity<String> completeRide(@PathVariable String customerEmail) {
