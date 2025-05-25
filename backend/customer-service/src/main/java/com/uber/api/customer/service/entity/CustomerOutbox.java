@@ -1,5 +1,6 @@
-package com.uber.api.shared.outbox;
+package com.uber.api.customer.service.entity;
 
+import com.uber.api.shared.outbox.OutboxStatus;
 import com.uber.api.shared.saga.SagaStatus;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -11,12 +12,12 @@ import java.time.ZonedDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "outbox_events")
+@Table(name = "customer_outbox")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class OutboxEvent {
+public class CustomerOutbox {
 
     @Id
     @GeneratedValue(strategy = GenerationType.AUTO)
