@@ -3,6 +3,7 @@ package com.uber.api.customer.service.controller;
 import com.uber.api.customer.service.dto.CallTaxiRequest;
 import com.uber.api.customer.service.dto.RideStatusResponse;
 import com.uber.api.customer.service.service.CustomerDomainService;
+import com.uber.api.customer.service.service.RideMatchingService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -18,13 +19,15 @@ import jakarta.validation.Valid;
 public class CustomerController {
 
     private final CustomerDomainService customerDomainService;
+    private final RideMatchingService rideMatchingService;
 
     @PostMapping("/call")
     public ResponseEntity<RideStatusResponse> callTaxi(@Valid @RequestBody CallTaxiRequest request) {
         log.info("Received taxi call request from customer: {}", request.getCustomerEmail());
 
         try {
-            RideStatusResponse response = customerDomainService.callTaxi(request);
+            // **USE RideMatchingService for intelligent routing**
+            RideStatusResponse response = rideMatchingService.requestRide(request);
             log.info("Taxi call request processed successfully for customer: {}", request.getCustomerEmail());
             return ResponseEntity.ok(response);
 
@@ -37,6 +40,7 @@ public class CustomerController {
                             .build());
         }
     }
+
 
     @GetMapping("/status/{customerEmail}")
     public ResponseEntity<RideStatusResponse> getRideStatus(@PathVariable String customerEmail) {

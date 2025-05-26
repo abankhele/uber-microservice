@@ -537,4 +537,35 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         log.info("=== END QUEUE ORDER ===");
     }
 
+    // **NEW METHODS for RideMatchingService integration**
+
+    public RideRequest createRideRequestFromRequest(CallTaxiRequest request) {
+        return createRideRequest(request);
+    }
+
+    public void addToExistingQueue(RideRequest rideRequest) {
+        addToQueue(rideRequest);
+    }
+
+    public void startSagaForRide(RideRequest rideRequest) {
+        try {
+            // Create payment request event to start SAGA
+            PaymentRequestEvent paymentRequestEvent = PaymentRequestEvent.builder()
+                    .sagaId(UUID.randomUUID())
+                    .rideRequestId(rideRequest.getId())
+                    .customerEmail(rideRequest.getCustomerEmail())
+                    .amount(rideRequest.getEstimatedPrice())
+                    .description("Taxi ride payment")
+                    .build();
+
+            saveToOutbox(paymentRequestEvent, paymentRequestEvent.getSagaId(), "payment-requests");
+            log.info("✅ Started SAGA for ride: {}", rideRequest.getId());
+
+        } catch (Exception e) {
+            log.error("Failed to start SAGA for ride: {}", rideRequest.getId(), e);
+            throw new RuntimeException("Failed to start SAGA", e);
+        }
+    }
+
+
 }
