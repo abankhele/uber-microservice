@@ -24,7 +24,7 @@ public class RideMatchingService {
     private final CustomerRepository customerRepository;
     private final RideRequestRepository rideRequestRepository;
 
-    // **SIMPLE COUNTER: Track requests being processed**
+
     private static final AtomicInteger requestCounter = new AtomicInteger(0);
     private static final int MAX_DRIVERS = 3;
 
@@ -46,13 +46,13 @@ public class RideMatchingService {
             customer.setCurrentRideRequestId(savedRideRequest.getId());
             customerRepository.save(customer);
 
-            // **SIMPLE LOGIC: Use atomic counter**
+
             int currentRequests = requestCounter.get();
             log.info("Current processing requests: {}, Max drivers: {} for customer: {}",
                     currentRequests, MAX_DRIVERS, request.getCustomerEmail());
 
             if (currentRequests < MAX_DRIVERS) {
-                // **IMMEDIATE PROCESSING**
+
                 int slot = requestCounter.incrementAndGet();
                 log.info("✅ IMMEDIATE PROCESSING: Slot {} for {}", slot, request.getCustomerEmail());
 

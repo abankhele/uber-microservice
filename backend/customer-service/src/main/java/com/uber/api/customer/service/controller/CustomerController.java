@@ -2,14 +2,18 @@ package com.uber.api.customer.service.controller;
 
 import com.uber.api.customer.service.dto.CallTaxiRequest;
 import com.uber.api.customer.service.dto.RideStatusResponse;
+import com.uber.api.customer.service.repository.QueuedRequestRepository;
 import com.uber.api.customer.service.service.CustomerDomainService;
 import com.uber.api.customer.service.service.RideMatchingService;
+import com.uber.api.shared.entities.QueuedRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import jakarta.validation.Valid;
+
+import java.util.List;
 
 @Slf4j
 @RestController
@@ -20,6 +24,7 @@ public class CustomerController {
 
     private final CustomerDomainService customerDomainService;
     private final RideMatchingService rideMatchingService;
+    private final QueuedRequestRepository queuedRequestRepository;
 
     @PostMapping("/call")
     public ResponseEntity<RideStatusResponse> callTaxi(@Valid @RequestBody CallTaxiRequest request) {
@@ -113,15 +118,28 @@ public class CustomerController {
         }
     }
 
-    @GetMapping("/debug/queue")
-    public ResponseEntity<String> debugQueue() {
+    @GetMapping("/debug/queue-check")
+    public ResponseEntity<String> debugQueueCheck() {
         try {
-            customerDomainService.debugQueueOrder();
-            return ResponseEntity.ok("Queue order logged - check console");
+            List<QueuedRequest> allRequests = queuedRequestRepository.findAll();
+            StringBuilder result = new StringBuilder("=== QUEUE DEBUG ===\n");
+
+            result.append("Total requests in queue table: ").append(allRequests.size()).append("\n");
+
+            for (QueuedRequest request : allRequests) {
+                result.append(String.format("ID: %s, Customer: %s, Status: %s\n",
+                        request.getId(), request.getCustomerEmail(), request.getStatus()));
+            }
+
+            List<QueuedRequest> queuedOnly = queuedRequestRepository.findQueuedRequestsOrderedByPriority();
+            result.append("\nRequests with status 'QUEUED': ").append(queuedOnly.size()).append("\n");
+
+            return ResponseEntity.ok(result.toString());
         } catch (Exception e) {
             return ResponseEntity.badRequest().body("Error: " + e.getMessage());
         }
     }
+
 
 
     @GetMapping("/health")

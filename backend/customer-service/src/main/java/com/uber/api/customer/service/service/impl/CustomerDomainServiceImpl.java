@@ -24,7 +24,6 @@ import com.uber.api.shared.saga.SagaStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.client.RestTemplate;
@@ -137,14 +136,15 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             releaseDriver(activeRide.getDriverEmail(), activeRide.getId(), customerEmail, "COMPLETED");
         }
 
+        // **CRITICAL: Release slot when ride completes (like Uber's resource management)**
         RideMatchingService.releaseSlot(customerEmail);
 
         // **CRITICAL: Trigger queue processing**
+        log.info("🔄 TRIGGERING IMMEDIATE QUEUE PROCESSING AFTER COMPLETION");
         processQueuedRequests();
 
         log.info("✅ RIDE COMPLETED for customer: {}", customerEmail);
     }
-
 
     @Override
     @Transactional
@@ -203,7 +203,6 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             return;
         }
 
-        // **CRITICAL FIX: Get driver count ONCE and manage locally**
         int availableDrivers = getAvailableDriverCount();
         log.info("Found {} queued requests, {} available drivers", queuedRequests.size(), availableDrivers);
 
@@ -212,65 +211,40 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             return;
         }
 
-        // **CRITICAL FIX: Process EXACTLY the number of available drivers**
+        // **DIRECT FIX: Process requests directly without complex queue logic**
         int processedCount = 0;
-        int maxToProcess = Math.min(queuedRequests.size(), availableDrivers);
+        for (QueuedRequest queuedRequest : queuedRequests) {
+            if (processedCount >= availableDrivers) {
+                break;
+            }
 
-        log.info("Will process {} requests (limited by available drivers)", maxToProcess);
-
-        for (int i = 0; i < maxToProcess; i++) {
-            QueuedRequest queuedRequest = queuedRequests.get(i);
+            if (!"QUEUED".equals(queuedRequest.getStatus())) {
+                continue;
+            }
 
             try {
-                // **Get fresh copy to avoid stale data**
-                QueuedRequest freshRequest = queuedRequestRepository.findById(queuedRequest.getId()).orElse(null);
+                log.info("🔄 DIRECTLY PROCESSING queued request for: {}", queuedRequest.getCustomerEmail());
 
-                if (freshRequest == null || !"QUEUED".equals(freshRequest.getStatus())) {
-                    log.debug("Skipping request {} - status: {}", queuedRequest.getId(),
-                            freshRequest != null ? freshRequest.getStatus() : "NOT_FOUND");
-                    continue;
-                }
+                // **DIRECT SAGA START: Skip queue processing, start SAGA directly**
+                RideRequest rideRequest = rideRequestRepository.findById(queuedRequest.getRideRequestId()).orElse(null);
+                if (rideRequest != null) {
+                    // Reset status and start SAGA
+                    rideRequest.setStatus(RideStatus.CREATED);
+                    rideRequestRepository.save(rideRequest);
 
-                log.info("🔄 Processing queued request: {} for customer: {} (position: {})",
-                        freshRequest.getId(), freshRequest.getCustomerEmail(), i + 1);
+                    // Start SAGA directly
+                    startSagaForRide(rideRequest);
 
-                // Check if expired
-                if (freshRequest.getExpiresAt().isBefore(ZonedDateTime.now())) {
-                    log.warn("Request {} has expired, skipping", freshRequest.getId());
-                    handleExpiredQueuedRequest(freshRequest);
-                    continue;
-                }
+                    // Mark queue as completed
+                    queuedRequest.setStatus("COMPLETED");
+                    queuedRequestRepository.save(queuedRequest);
 
-                // **Mark as processing**
-                freshRequest.setStatus("PROCESSING");
-                queuedRequestRepository.save(freshRequest);
-
-                // **Process the payment for queued request via SAGA**
-                if (processQueuedPayment(freshRequest)) {
-                    freshRequest.setStatus("COMPLETED");
-                    queuedRequestRepository.save(freshRequest);
                     processedCount++;
-                    log.info("✅ Successfully processed queued request: {} (order: {})",
-                            freshRequest.getId(), processedCount);
-                } else {
-                    // Reset to queued if processing failed
-                    freshRequest.setStatus("QUEUED");
-                    queuedRequestRepository.save(freshRequest);
-                    log.error("❌ Failed to process queued request: {}", freshRequest.getId());
+                    log.info("✅ DIRECTLY STARTED SAGA for queued request: {}", queuedRequest.getCustomerEmail());
                 }
 
             } catch (Exception e) {
-                log.error("Error processing queued request: {}", queuedRequest.getId(), e);
-                // Reset to queued for retry
-                try {
-                    QueuedRequest errorRequest = queuedRequestRepository.findById(queuedRequest.getId()).orElse(null);
-                    if (errorRequest != null) {
-                        errorRequest.setStatus("QUEUED");
-                        queuedRequestRepository.save(errorRequest);
-                    }
-                } catch (Exception ex) {
-                    log.error("Failed to reset request status", ex);
-                }
+                log.error("❌ Error processing queued request", e);
             }
         }
 
@@ -317,22 +291,6 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         } catch (Exception e) {
             log.error("Failed to add to queue", e);
             throw new RuntimeException("Failed to add to queue", e);
-        }
-    }
-
-    private boolean processQueuedPayment(QueuedRequest queuedRequest) {
-        try {
-            PaymentRequestEvent paymentEvent = objectMapper.readValue(
-                    queuedRequest.getDriverRequestPayload(), PaymentRequestEvent.class);
-
-            // **SAGA INTEGRATION: Save to outbox for reliable processing**
-            saveToOutbox(paymentEvent, queuedRequest.getSagaId(), "payment-requests");
-            log.info("Payment request sent via SAGA for queued ride: {}", queuedRequest.getRideRequestId());
-            return true;
-
-        } catch (Exception e) {
-            log.error("Failed to process queued payment", e);
-            return false;
         }
     }
 
@@ -514,6 +472,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     public RideRequest createRideRequestFromRequest(CallTaxiRequest request) {
         return createRideRequest(request);
     }
+
     @Override
     public void addToExistingQueue(RideRequest rideRequest) {
         log.info("🔄 ADDING REQUEST TO EXISTING QUEUE: {}", rideRequest.getCustomerEmail());
@@ -562,7 +521,4 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         }
         log.info("=== END QUEUED ONLY ===");
     }
-
-
-
 }
