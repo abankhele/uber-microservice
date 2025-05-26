@@ -13,17 +13,18 @@ public class QueueAndTimeoutScheduler {
 
     private final CustomerDomainService customerDomainService;
 
-    // **CRITICAL FIX: Reduced frequency to prevent race conditions**
-    @Scheduled(fixedDelay = 10000) // Every 10 seconds instead of 2
+
+    @Scheduled(fixedDelay = 3000) // Every 3 seconds
     public void processQueuedRequests() {
         try {
+            log.debug("🔄 Running queue processor...");
             customerDomainService.processQueuedRequests();
         } catch (Exception e) {
             log.error("Error processing queued requests", e);
         }
     }
 
-    @Scheduled(fixedDelay = 30000) // Every 30 seconds
+    @Scheduled(fixedDelay = 30000)
     public void processExpiredRequests() {
         try {
             customerDomainService.processExpiredRequests();

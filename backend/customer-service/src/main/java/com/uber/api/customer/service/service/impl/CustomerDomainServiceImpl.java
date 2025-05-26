@@ -162,18 +162,16 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         // Reset customer status
         resetCustomerToAvailable(customerEmail);
 
-        // **CRITICAL: Release driver**
+        // **RELEASE DRIVER**
         if (activeRide.getDriverEmail() != null) {
             log.info("🔄 RELEASING DRIVER {} AFTER COMPLETION", activeRide.getDriverEmail());
             releaseDriver(activeRide.getDriverEmail(), activeRide.getId(), customerEmail, "COMPLETED");
         }
 
-        // **CRITICAL: Immediately trigger queue processing after completion**
-        log.info("🔄 TRIGGERING IMMEDIATE QUEUE PROCESSING AFTER COMPLETION");
-        processQueuedRequests();
-
-        log.info("✅ RIDE COMPLETED for customer: {}", customerEmail);
+        // **REMOVED: Don't trigger queue processing immediately - let scheduler handle it**
+        log.info("✅ RIDE COMPLETED for customer: {} - Queue will process in next cycle", customerEmail);
     }
+
 
     @Override
     @Transactional
