@@ -10,5 +10,6 @@ public interface DriverDomainService {
     void resetAllDriversToAvailable();
     void completeDriverRide(String driverEmail);
     int getAvailableDriverCount();
+    boolean hasAvailableDrivers();
 
 }

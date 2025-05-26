@@ -11,5 +11,9 @@ public enum RideStatus {
     PAYMENT_FAILED,     // Payment processing failed
     DRIVER_UNAVAILABLE, // No driver available
     CANCELLED,          // Ride cancelled by customer
-    EXPIRED             // Request expired after timeout
+    EXPIRED ,            // Request expired after timeout
+
+    REFUND_PROCESSING,  // Refund in progress
+    REFUND_COMPLETED    // Refund completed
+
 }

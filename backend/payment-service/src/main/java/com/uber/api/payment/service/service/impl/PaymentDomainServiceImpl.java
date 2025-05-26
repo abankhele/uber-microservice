@@ -11,10 +11,14 @@ import com.uber.api.payment.service.service.PaymentDomainService;
 import com.uber.api.shared.constants.PaymentStatus;
 import com.uber.api.shared.events.PaymentRequestEvent;
 import com.uber.api.shared.events.PaymentResponseEvent;
+import com.uber.api.shared.events.PaymentRefundEvent;
 import com.uber.api.shared.outbox.OutboxStatus;
 import com.uber.api.shared.saga.SagaStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,15 +38,15 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
 
     @Override
     @Transactional
+    @Retryable(value = {OptimisticLockingFailureException.class}, maxAttempts = 3, backoff = @Backoff(delay = 100))
     public PaymentResponseEvent processPayment(PaymentRequestEvent paymentRequest) {
         log.info("Processing payment for customer: {} amount: {}",
                 paymentRequest.getCustomerEmail(), paymentRequest.getAmount());
 
         try {
-            // Find or create customer balance
+            // **FIX 1: Atomic balance check and deduction**
             Balance balance = findOrCreateBalance(paymentRequest.getCustomerEmail());
 
-            // Check if customer has sufficient balance
             if (!balance.hasSufficientBalance(paymentRequest.getAmount())) {
                 log.warn("Insufficient balance for customer: {} required: {} available: {}",
                         paymentRequest.getCustomerEmail(), paymentRequest.getAmount(), balance.getAmount());
@@ -50,11 +54,11 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
                 return createFailedPaymentResponse(paymentRequest, "Insufficient balance");
             }
 
-            // Deduct amount from balance
+            // **FIX 2: Atomic balance deduction with optimistic locking**
             balance.deductAmount(paymentRequest.getAmount());
             balanceRepository.save(balance);
 
-            // Create transaction record
+            // Create successful transaction record
             Transaction transaction = Transaction.builder()
                     .customerEmail(paymentRequest.getCustomerEmail())
                     .rideRequestId(paymentRequest.getRideRequestId())
@@ -78,7 +82,6 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
                     .status(PaymentStatus.COMPLETED)
                     .build();
 
-            // Save to outbox for reliable messaging
             saveToOutbox(response, paymentRequest.getSagaId(), "payment-responses");
 
             log.info("Payment processed successfully for customer: {} amount: {}",
@@ -86,6 +89,9 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
 
             return response;
 
+        } catch (OptimisticLockingFailureException e) {
+            log.warn("Optimistic locking failure during payment processing, retrying...");
+            throw e; // Will be retried by @Retryable
         } catch (Exception e) {
             log.error("Error processing payment for customer: {}", paymentRequest.getCustomerEmail(), e);
             return createFailedPaymentResponse(paymentRequest, "Payment processing failed: " + e.getMessage());
@@ -94,12 +100,13 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
 
     @Override
     @Transactional
+    @Retryable(value = {OptimisticLockingFailureException.class}, maxAttempts = 3, backoff = @Backoff(delay = 100))
     public PaymentResponseEvent refundPayment(PaymentRequestEvent refundRequest) {
         log.info("Processing refund for customer: {} amount: {}",
                 refundRequest.getCustomerEmail(), refundRequest.getAmount());
 
         try {
-            // Find customer balance
+            // **FIX 3: Atomic refund processing**
             Balance balance = findOrCreateBalance(refundRequest.getCustomerEmail());
 
             // Add refund amount to balance
@@ -130,7 +137,6 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
                     .status(PaymentStatus.COMPLETED)
                     .build();
 
-            // Save to outbox
             saveToOutbox(response, refundRequest.getSagaId(), "payment-responses");
 
             log.info("Refund processed successfully for customer: {} amount: {}",
@@ -138,9 +144,50 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
 
             return response;
 
+        } catch (OptimisticLockingFailureException e) {
+            log.warn("Optimistic locking failure during refund processing, retrying...");
+            throw e; // Will be retried by @Retryable
         } catch (Exception e) {
             log.error("Error processing refund for customer: {}", refundRequest.getCustomerEmail(), e);
             return createFailedPaymentResponse(refundRequest, "Refund processing failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * **FIX 4: Handle refund requests from Kafka**
+     */
+    @Transactional
+    public void processRefundRequest(PaymentRefundEvent refundEvent) {
+        log.info("Processing refund request for customer: {} amount: {}",
+                refundEvent.getCustomerEmail(), refundEvent.getAmount());
+
+        try {
+            Balance balance = findOrCreateBalance(refundEvent.getCustomerEmail());
+
+            // Add refund amount to balance
+            balance.addAmount(refundEvent.getAmount());
+            balanceRepository.save(balance);
+
+            // Create refund transaction
+            Transaction transaction = Transaction.builder()
+                    .customerEmail(refundEvent.getCustomerEmail())
+                    .rideRequestId(refundEvent.getRideRequestId())
+                    .sagaId(refundEvent.getSagaId())
+                    .amount(refundEvent.getAmount())
+                    .status(PaymentStatus.COMPLETED)
+                    .type(Transaction.TransactionType.REFUND)
+                    .description("Refund: " + refundEvent.getReason())
+                    .createdAt(ZonedDateTime.now())
+                    .processedAt(ZonedDateTime.now())
+                    .build();
+
+            transactionRepository.save(transaction);
+
+            log.info("Refund processed successfully for customer: {} amount: {}",
+                    refundEvent.getCustomerEmail(), refundEvent.getAmount());
+
+        } catch (Exception e) {
+            log.error("Error processing refund request for customer: {}", refundEvent.getCustomerEmail(), e);
         }
     }
 
@@ -196,7 +243,6 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
                 .failureReason(failureReason)
                 .build();
 
-        // Save to outbox
         saveToOutbox(response, request.getSagaId(), "payment-responses");
 
         return response;

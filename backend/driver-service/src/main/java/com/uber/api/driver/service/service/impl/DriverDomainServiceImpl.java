@@ -13,6 +13,9 @@ import com.uber.api.shared.outbox.OutboxStatus;
 import com.uber.api.shared.saga.SagaStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,20 +35,25 @@ public class DriverDomainServiceImpl implements DriverDomainService {
 
     @Override
     @Transactional
+    @Retryable(value = {OptimisticLockingFailureException.class}, maxAttempts = 5, backoff = @Backoff(delay = 50))
     public DriverResponseEvent assignDriver(DriverRequestEvent driverRequest) {
-        log.info("Processing driver assignment for ride: {}", driverRequest.getRideRequestId());
+        log.info("Processing driver assignment for ride: {} (Saga: {})",
+                driverRequest.getRideRequestId(), driverRequest.getSagaId());
 
         try {
-            // Find nearest available driver
-            Driver assignedDriver = findNearestAvailableDriver(driverRequest);
+            // **FIX 1: Atomic driver count check and assignment**
+            long availableCount = driverRepository.countByStatus(DriverStatus.AVAILABLE);
+            log.info("Available drivers count: {}", availableCount);
+
+            if (availableCount == 0) {
+                log.warn("No available drivers for ride: {}", driverRequest.getRideRequestId());
+                return createNoDriverResponse(driverRequest);
+            }
+
+            // **FIX 2: Atomic driver assignment with optimistic locking**
+            Driver assignedDriver = findAndAtomicallyAssignDriver(driverRequest);
 
             if (assignedDriver != null) {
-                // Assign driver to ride
-                assignedDriver.setStatus(DriverStatus.BUSY);
-                assignedDriver.setCurrentRideRequestId(driverRequest.getRideRequestId());
-                driverRepository.save(assignedDriver);
-
-                // Create successful driver response
                 DriverResponseEvent response = DriverResponseEvent.builder()
                         .sagaId(driverRequest.getSagaId())
                         .rideRequestId(driverRequest.getRideRequestId())
@@ -54,49 +62,75 @@ public class DriverDomainServiceImpl implements DriverDomainService {
                         .accepted(true)
                         .build();
 
-                // Save to outbox for reliable messaging
                 saveToOutbox(response, driverRequest.getSagaId(), "driver-responses");
-
                 log.info("Driver {} assigned to ride: {}", assignedDriver.getEmail(), driverRequest.getRideRequestId());
 
                 return response;
 
             } else {
-                log.warn("No available drivers found for ride: {}", driverRequest.getRideRequestId());
-
-                // Create driver unavailable response
-                DriverResponseEvent response = DriverResponseEvent.builder()
-                        .sagaId(driverRequest.getSagaId())
-                        .rideRequestId(driverRequest.getRideRequestId())
-                        .driverEmail(null)
-                        .status(DriverStatus.AVAILABLE)
-                        .accepted(false)
-                        .rejectionReason("No drivers available in the area")
-                        .build();
-
-                // Save to outbox
-                saveToOutbox(response, driverRequest.getSagaId(), "driver-responses");
-
-                return response;
+                log.warn("Failed to assign any driver for ride: {} (race condition)",
+                        driverRequest.getRideRequestId());
+                return createNoDriverResponse(driverRequest);
             }
 
         } catch (Exception e) {
             log.error("Error assigning driver for ride: {}", driverRequest.getRideRequestId(), e);
-
-            // Create error response
-            DriverResponseEvent response = DriverResponseEvent.builder()
-                    .sagaId(driverRequest.getSagaId())
-                    .rideRequestId(driverRequest.getRideRequestId())
-                    .driverEmail(null)
-                    .status(DriverStatus.AVAILABLE)
-                    .accepted(false)
-                    .rejectionReason("Driver assignment failed: " + e.getMessage())
-                    .build();
-
-            saveToOutbox(response, driverRequest.getSagaId(), "driver-responses");
-
-            return response;
+            return createErrorResponse(driverRequest, e.getMessage());
         }
+    }
+
+    /**
+     * **FIX 3: Atomic driver assignment using optimistic locking**
+     */
+    private Driver findAndAtomicallyAssignDriver(DriverRequestEvent driverRequest) {
+        Double pickupLat = driverRequest.getPickupLocation().getLatitude();
+        Double pickupLng = driverRequest.getPickupLocation().getLongitude();
+        String city = driverRequest.getPickupLocation().getCity();
+
+        // Get available drivers sorted by distance
+        List<Driver> availableDrivers = driverRepository.findAvailableDriversInCity(city);
+        if (availableDrivers.isEmpty()) {
+            availableDrivers = driverRepository.findAllAvailableDrivers();
+        }
+
+        // Sort by distance to pickup location
+        availableDrivers.sort(Comparator.comparing(driver ->
+                driver.distanceToLocation(pickupLat, pickupLng)));
+
+        // **FIX 4: Try to assign drivers in order with retry logic**
+        for (Driver driver : availableDrivers) {
+            try {
+                // Refresh driver from database to get latest version
+                Driver freshDriver = driverRepository.findById(driver.getId())
+                        .orElse(null);
+
+                if (freshDriver == null || freshDriver.getStatus() != DriverStatus.AVAILABLE) {
+                    log.debug("Driver {} no longer available, trying next", driver.getEmail());
+                    continue;
+                }
+
+                // **ATOMIC OPERATION: Update with optimistic locking**
+                freshDriver.setStatus(DriverStatus.BUSY);
+                freshDriver.setCurrentRideRequestId(driverRequest.getRideRequestId());
+
+                // This will throw OptimisticLockingFailureException if driver was already assigned
+                Driver savedDriver = driverRepository.save(freshDriver);
+
+                log.info("Successfully assigned driver {} to ride {}",
+                        driver.getEmail(), driverRequest.getRideRequestId());
+                return savedDriver;
+
+            } catch (OptimisticLockingFailureException e) {
+                log.warn("Driver {} was already assigned to another ride, trying next driver",
+                        driver.getEmail());
+                // Continue to next driver
+            } catch (Exception e) {
+                log.error("Error assigning driver {}: {}", driver.getEmail(), e.getMessage());
+                // Continue to next driver
+            }
+        }
+
+        return null; // No driver could be assigned
     }
 
     @Override
@@ -140,6 +174,7 @@ public class DriverDomainServiceImpl implements DriverDomainService {
         log.info("Resetting all drivers to AVAILABLE status");
 
         List<Driver> allDrivers = driverRepository.findAll();
+        int resetCount = 0;
 
         for (Driver driver : allDrivers) {
             if (driver.getStatus() != DriverStatus.AVAILABLE) {
@@ -149,10 +184,11 @@ public class DriverDomainServiceImpl implements DriverDomainService {
                 driver.setStatus(DriverStatus.AVAILABLE);
                 driver.setCurrentRideRequestId(null);
                 driverRepository.save(driver);
+                resetCount++;
             }
         }
 
-        log.info("Reset {} drivers to AVAILABLE status", allDrivers.size());
+        log.info("Reset {} drivers to AVAILABLE status", resetCount);
     }
 
     @Override
@@ -175,30 +211,36 @@ public class DriverDomainServiceImpl implements DriverDomainService {
         );
     }
 
-    private Driver findNearestAvailableDriver(DriverRequestEvent driverRequest) {
-        // Get pickup location
-        Double pickupLat = driverRequest.getPickupLocation().getLatitude();
-        Double pickupLng = driverRequest.getPickupLocation().getLongitude();
-        String city = driverRequest.getPickupLocation().getCity();
+    @Override
+    public int getAvailableDriverCount() {
+        return (int) driverRepository.countByStatus(DriverStatus.AVAILABLE);
+    }
 
-        // First try to find drivers in the same city
-        List<Driver> cityDrivers = driverRepository.findAvailableDriversInCity(city);
+    @Override
+    public boolean hasAvailableDrivers() {
+        return driverRepository.countByStatus(DriverStatus.AVAILABLE) > 0;
+    }
 
-        if (!cityDrivers.isEmpty()) {
-            // Find nearest driver in the city
-            return cityDrivers.stream()
-                    .min(Comparator.comparing(driver ->
-                            driver.distanceToLocation(pickupLat, pickupLng)))
-                    .orElse(null);
-        }
+    private DriverResponseEvent createNoDriverResponse(DriverRequestEvent request) {
+        return DriverResponseEvent.builder()
+                .sagaId(request.getSagaId())
+                .rideRequestId(request.getRideRequestId())
+                .driverEmail(null)
+                .status(DriverStatus.AVAILABLE)
+                .accepted(false)
+                .rejectionReason("No drivers available in the area")
+                .build();
+    }
 
-        // If no drivers in city, find nearest available driver overall
-        List<Driver> allAvailableDrivers = driverRepository.findAllAvailableDrivers();
-
-        return allAvailableDrivers.stream()
-                .min(Comparator.comparing(driver ->
-                        driver.distanceToLocation(pickupLat, pickupLng)))
-                .orElse(null);
+    private DriverResponseEvent createErrorResponse(DriverRequestEvent request, String errorMessage) {
+        return DriverResponseEvent.builder()
+                .sagaId(request.getSagaId())
+                .rideRequestId(request.getRideRequestId())
+                .driverEmail(null)
+                .status(DriverStatus.AVAILABLE)
+                .accepted(false)
+                .rejectionReason("Driver assignment failed: " + errorMessage)
+                .build();
     }
 
     private void saveToOutbox(Object event, UUID sagaId, String eventType) {
@@ -220,10 +262,5 @@ public class DriverDomainServiceImpl implements DriverDomainService {
             log.error("Failed to save event to outbox", e);
             throw new RuntimeException("Failed to save event to outbox", e);
         }
-    }
-
-    @Override
-    public int getAvailableDriverCount() {
-        return (int) driverRepository.countByStatus(DriverStatus.AVAILABLE);
     }
 }

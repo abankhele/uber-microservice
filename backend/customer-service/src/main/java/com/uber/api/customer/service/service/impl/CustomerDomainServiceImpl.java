@@ -17,12 +17,15 @@ import com.uber.api.shared.entities.Location;
 import com.uber.api.shared.entities.QueuedRequest;
 import com.uber.api.shared.entities.RideRequest;
 import com.uber.api.shared.events.DriverCompletionEvent;
-import com.uber.api.shared.events.DriverRequestEvent;
 import com.uber.api.shared.events.PaymentRequestEvent;
+import com.uber.api.shared.events.PaymentRefundEvent;
 import com.uber.api.shared.outbox.OutboxStatus;
 import com.uber.api.shared.saga.SagaStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
@@ -30,6 +33,7 @@ import org.springframework.web.client.RestTemplate;
 import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Slf4j
 @Service
@@ -41,66 +45,77 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     private final CustomerOutboxRepository customerOutboxRepository;
     private final QueuedRequestRepository queuedRequestRepository;
     private final ObjectMapper objectMapper;
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;
+
+    // Prevent concurrent requests from same customer
+    private final ReentrantLock customerLock = new ReentrantLock();
 
     @Override
     @Transactional
+    @Retryable(value = {OptimisticLockingFailureException.class}, maxAttempts = 3, backoff = @Backoff(delay = 100))
     public RideStatusResponse callTaxi(CallTaxiRequest request) {
         log.info("Processing taxi call request for customer: {}", request.getCustomerEmail());
 
-        // Find or create customer
-        Customer customer = findOrCreateCustomer(request.getCustomerEmail());
+        // **FIX 1: Prevent concurrent requests from same customer**
+        customerLock.lock();
+        try {
+            // Find or create customer
+            Customer customer = findOrCreateCustomer(request.getCustomerEmail());
 
-        // Validate customer can make a new request
-        validateCustomerCanCallTaxi(customer);
+            // **FIX 2: Strict validation to prevent duplicate requests**
+            validateCustomerCanCallTaxi(customer);
 
-        // Check driver availability BEFORE creating ride request
-        boolean driversAvailable = checkDriverAvailability();
+            // **FIX 3: Real-time driver availability check**
+            int availableDrivers = getAvailableDriverCount();
+            log.info("Available drivers: {} for customer: {}", availableDrivers, request.getCustomerEmail());
 
-        // Create ride request
-        RideRequest rideRequest = createRideRequest(request);
-        RideRequest savedRideRequest = rideRequestRepository.save(rideRequest);
+            // Create ride request
+            RideRequest rideRequest = createRideRequest(request);
+            RideRequest savedRideRequest = rideRequestRepository.save(rideRequest);
 
-        // Update customer status
-        customer.setStatus(CustomerStatus.REQUESTING);
-        customer.setCurrentRideRequestId(savedRideRequest.getId());
-        customerRepository.save(customer);
+            // Update customer status atomically
+            customer.setStatus(CustomerStatus.REQUESTING);
+            customer.setCurrentRideRequestId(savedRideRequest.getId());
+            customerRepository.save(customer);
 
-        if (!driversAvailable) {
-            // No drivers available - queue the request and set status to DRIVER_SEARCHING
-            log.warn("No drivers available for customer: {}. Queueing request.", request.getCustomerEmail());
+            if (availableDrivers == 0) {
+                // **FIX 4: Queue system with 10-minute timeout**
+                log.warn("No drivers available for customer: {}. Adding to queue with 10-minute timeout.",
+                        request.getCustomerEmail());
 
-            savedRideRequest.setStatus(RideStatus.DRIVER_SEARCHING);
-            rideRequestRepository.save(savedRideRequest);
+                savedRideRequest.setStatus(RideStatus.DRIVER_SEARCHING);
+                rideRequestRepository.save(savedRideRequest);
 
-            // Queue the payment and driver request for later processing
-            queueRideRequest(savedRideRequest, request);
+                // Queue the request with timeout
+                queueRideRequestWithTimeout(savedRideRequest, request);
 
-            return RideStatusResponse.builder()
+                return RideStatusResponse.builder()
+                        .rideRequestId(savedRideRequest.getId())
+                        .status(RideStatus.DRIVER_SEARCHING)
+                        .customerEmail(request.getCustomerEmail())
+                        .estimatedPrice(savedRideRequest.getEstimatedPrice())
+                        .createdAt(savedRideRequest.getCreatedAt())
+                        .statusMessage("All drivers are busy. You're in queue for the next available driver. Request will expire in 10 minutes if no driver is found.")
+                        .build();
+            }
+
+            // **FIX 5: Immediate processing when drivers available**
+            PaymentRequestEvent paymentRequestEvent = PaymentRequestEvent.builder()
+                    .sagaId(UUID.randomUUID())
                     .rideRequestId(savedRideRequest.getId())
-                    .status(RideStatus.DRIVER_SEARCHING)
                     .customerEmail(request.getCustomerEmail())
-                    .estimatedPrice(savedRideRequest.getEstimatedPrice())
-                    .createdAt(savedRideRequest.getCreatedAt())
-                    .statusMessage("All drivers are busy. You're in queue for the next available driver. Request will expire in 10 minutes.")
+                    .amount(savedRideRequest.getEstimatedPrice())
+                    .description("Taxi ride payment")
                     .build();
+
+            saveToOutbox(paymentRequestEvent, paymentRequestEvent.getSagaId(), "payment-requests");
+
+            log.info("Taxi call request processed successfully for customer: {}", request.getCustomerEmail());
+            return mapToRideStatusResponse(savedRideRequest);
+
+        } finally {
+            customerLock.unlock();
         }
-
-        // Drivers available - process payment immediately
-        PaymentRequestEvent paymentRequestEvent = PaymentRequestEvent.builder()
-                .sagaId(UUID.randomUUID())
-                .rideRequestId(savedRideRequest.getId())
-                .customerEmail(request.getCustomerEmail())
-                .amount(savedRideRequest.getEstimatedPrice())
-                .description("Taxi ride payment")
-                .build();
-
-        // Save to outbox for reliable messaging
-        saveToOutbox(paymentRequestEvent, paymentRequestEvent.getSagaId(), "payment-requests");
-
-        log.info("Taxi call request processed successfully for customer: {}", request.getCustomerEmail());
-
-        return mapToRideStatusResponse(savedRideRequest);
     }
 
     @Override
@@ -115,6 +130,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.RIDE_STARTED))
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.CANCELLED))
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.EXPIRED))
+                .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.REFUND_PROCESSING))
                 .orElse(null);
 
         if (currentRide == null) {
@@ -133,7 +149,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     public void cancelRide(String customerEmail) {
         log.info("Cancelling ride for customer: {}", customerEmail);
 
-        // Find active ride (not started yet)
+        // **FIX 6: Comprehensive cancellation handling**
         RideRequest activeRide = rideRequestRepository
                 .findByCustomerEmailAndStatus(customerEmail, RideStatus.CREATED)
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.PAYMENT_PROCESSING))
@@ -147,31 +163,21 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         rideRequestRepository.save(activeRide);
 
         // Reset customer status
-        Customer customer = customerRepository.findByEmail(customerEmail)
-                .orElseThrow(() -> new RuntimeException("Customer not found: " + customerEmail));
-
-        customer.setStatus(CustomerStatus.AVAILABLE);
-        customer.setCurrentRideRequestId(null);
-        customerRepository.save(customer);
+        resetCustomerToAvailable(customerEmail);
 
         // Remove from queue if queued
-        queuedRequestRepository.findByRideRequestId(activeRide.getId()).ifPresent(queuedRequest -> {
-            queuedRequest.setStatus("CANCELLED");
-            queuedRequestRepository.save(queuedRequest);
-            log.info("Removed cancelled ride from queue: {}", activeRide.getId());
-        });
+        removeFromQueue(activeRide.getId());
 
-        // If driver was assigned, reset driver status
+        // **FIX 7: Handle refunds for paid rides**
+        if (activeRide.getStatus() == RideStatus.PAYMENT_PROCESSING ||
+                activeRide.getDriverEmail() != null) {
+
+            initiateRefund(activeRide);
+        }
+
+        // **FIX 8: Reset driver if assigned**
         if (activeRide.getDriverEmail() != null) {
-            DriverCompletionEvent driverEvent = DriverCompletionEvent.builder()
-                    .driverEmail(activeRide.getDriverEmail())
-                    .rideRequestId(activeRide.getId())
-                    .customerEmail(customerEmail)
-                    .status("CANCELLED")
-                    .build();
-
-            saveToOutbox(driverEvent, UUID.randomUUID(), "driver-completion");
-            log.info("Driver completion event sent for cancelled ride: {}", activeRide.getDriverEmail());
+            releaseDriver(activeRide.getDriverEmail(), activeRide.getId(), customerEmail, "CANCELLED");
         }
 
         log.info("Ride cancelled successfully for customer: {}", customerEmail);
@@ -182,7 +188,6 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     public void completeRide(String customerEmail) {
         log.info("Completing ride for customer: {}", customerEmail);
 
-        // Find active ride (either DRIVER_ASSIGNED or RIDE_STARTED)
         RideRequest activeRide = rideRequestRepository
                 .findByCustomerEmailAndStatus(customerEmail, RideStatus.RIDE_STARTED)
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.DRIVER_ASSIGNED))
@@ -194,24 +199,11 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         rideRequestRepository.save(activeRide);
 
         // Reset customer status
-        Customer customer = customerRepository.findByEmail(customerEmail)
-                .orElseThrow(() -> new RuntimeException("Customer not found: " + customerEmail));
+        resetCustomerToAvailable(customerEmail);
 
-        customer.setStatus(CustomerStatus.AVAILABLE);
-        customer.setCurrentRideRequestId(null);
-        customerRepository.save(customer);
-
-        // Reset driver status via event
+        // **FIX 9: Always release driver after completion**
         if (activeRide.getDriverEmail() != null) {
-            DriverCompletionEvent driverEvent = DriverCompletionEvent.builder()
-                    .driverEmail(activeRide.getDriverEmail())
-                    .rideRequestId(activeRide.getId())
-                    .customerEmail(customerEmail)
-                    .status("COMPLETED")
-                    .build();
-
-            saveToOutbox(driverEvent, UUID.randomUUID(), "driver-completion");
-            log.info("Driver completion event sent for driver: {}", activeRide.getDriverEmail());
+            releaseDriver(activeRide.getDriverEmail(), activeRide.getId(), customerEmail, "COMPLETED");
         }
 
         log.info("Ride completed successfully for customer: {}", customerEmail);
@@ -222,12 +214,10 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     public void startRide(String customerEmail) {
         log.info("Starting ride for customer: {}", customerEmail);
 
-        // Find ride with DRIVER_ASSIGNED status
         RideRequest assignedRide = rideRequestRepository
                 .findByCustomerEmailAndStatus(customerEmail, RideStatus.DRIVER_ASSIGNED)
                 .orElseThrow(() -> new RuntimeException("No assigned ride found for customer: " + customerEmail));
 
-        // Update ride status to RIDE_STARTED
         assignedRide.setStatus(RideStatus.RIDE_STARTED);
         rideRequestRepository.save(assignedRide);
 
@@ -239,7 +229,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     public void processExpiredRequests() {
         ZonedDateTime now = ZonedDateTime.now();
 
-        // Find expired queued requests
+        // **FIX 10: Handle expired queued requests with refunds**
         List<QueuedRequest> expiredRequests = queuedRequestRepository
                 .findByStatusAndExpiresAtBefore("QUEUED", now);
 
@@ -247,24 +237,21 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
 
         for (QueuedRequest expiredRequest : expiredRequests) {
             try {
-                // Update queued request status
                 expiredRequest.setStatus("EXPIRED");
                 queuedRequestRepository.save(expiredRequest);
 
-                // Update ride request status
                 rideRequestRepository.findById(expiredRequest.getRideRequestId()).ifPresent(rideRequest -> {
                     rideRequest.setStatus(RideStatus.EXPIRED);
                     rideRequest.setCompletedAt(now);
                     rideRequestRepository.save(rideRequest);
 
-                    // Reset customer status
-                    customerRepository.findByEmail(rideRequest.getCustomerEmail()).ifPresent(customer -> {
-                        customer.setStatus(CustomerStatus.AVAILABLE);
-                        customer.setCurrentRideRequestId(null);
-                        customerRepository.save(customer);
-                    });
+                    // **FIX 11: Initiate refund for expired requests**
+                    initiateRefund(rideRequest);
 
-                    log.info("Expired ride request for customer: {}", rideRequest.getCustomerEmail());
+                    // Reset customer status
+                    resetCustomerToAvailable(rideRequest.getCustomerEmail());
+
+                    log.info("Expired and refunded ride request for customer: {}", rideRequest.getCustomerEmail());
                 });
 
             } catch (Exception e) {
@@ -276,35 +263,34 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     @Override
     @Transactional
     public void processQueuedRequests() {
-        // Check if any drivers are available
-        boolean driversAvailable = checkDriverAvailability();
+        // **FIX 12: Smart queue processing with driver availability**
+        int availableDrivers = getAvailableDriverCount();
 
-        if (!driversAvailable) {
+        if (availableDrivers == 0) {
             log.debug("No available drivers - skipping queue processing");
             return;
         }
 
-        // Get queued requests ordered by priority and time
         List<QueuedRequest> queuedRequests = queuedRequestRepository.findQueuedRequestsOrderedByPriority();
 
         if (queuedRequests.isEmpty()) {
             return;
         }
 
-        log.info("Processing {} queued requests with available drivers", queuedRequests.size());
+        log.info("Processing {} queued requests with {} available drivers",
+                queuedRequests.size(), availableDrivers);
 
+        int processedCount = 0;
         for (QueuedRequest queuedRequest : queuedRequests) {
-            try {
-                // Check if we still have available drivers
-                if (!checkDriverAvailability()) {
-                    log.info("No more available drivers - stopping queue processing");
-                    break;
-                }
+            if (processedCount >= availableDrivers) {
+                log.info("Processed {} requests, no more drivers available", processedCount);
+                break;
+            }
 
+            try {
                 // Check if request has expired
                 if (queuedRequest.getExpiresAt().isBefore(ZonedDateTime.now())) {
-                    queuedRequest.setStatus("EXPIRED");
-                    queuedRequestRepository.save(queuedRequest);
+                    handleExpiredQueuedRequest(queuedRequest);
                     continue;
                 }
 
@@ -312,72 +298,52 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                 queuedRequest.setStatus("PROCESSING");
                 queuedRequestRepository.save(queuedRequest);
 
-                // Find the ride request
-                RideRequest rideRequest = rideRequestRepository.findById(queuedRequest.getRideRequestId())
-                        .orElseThrow(() -> new RuntimeException("Ride request not found: " + queuedRequest.getRideRequestId()));
-
-                // Create payment request event
-                PaymentRequestEvent paymentRequestEvent = PaymentRequestEvent.builder()
-                        .sagaId(queuedRequest.getSagaId())
-                        .rideRequestId(rideRequest.getId())
-                        .customerEmail(rideRequest.getCustomerEmail())
-                        .amount(rideRequest.getEstimatedPrice())
-                        .description("Taxi ride payment")
-                        .build();
-
-                // Save to outbox for reliable messaging
-                saveToOutbox(paymentRequestEvent, queuedRequest.getSagaId(), "payment-requests");
-
-                // Mark as completed
-                queuedRequest.setStatus("COMPLETED");
-                queuedRequestRepository.save(queuedRequest);
-
-                log.info("Successfully processed queued request for ride: {}", queuedRequest.getRideRequestId());
+                // Process the queued request
+                if (processQueuedRequest(queuedRequest)) {
+                    processedCount++;
+                    queuedRequest.setStatus("COMPLETED");
+                    queuedRequestRepository.save(queuedRequest);
+                    log.info("Successfully processed queued request for ride: {}", queuedRequest.getRideRequestId());
+                } else {
+                    // Reset to queued if processing failed
+                    queuedRequest.setStatus("QUEUED");
+                    queuedRequestRepository.save(queuedRequest);
+                }
 
             } catch (Exception e) {
                 log.error("Error processing queued request: {}", queuedRequest.getId(), e);
-                // Don't mark as failed - retry next time
+                queuedRequest.setStatus("QUEUED"); // Retry later
+                queuedRequestRepository.save(queuedRequest);
             }
         }
     }
 
-    private boolean checkDriverAvailability() {
+    // **HELPER METHODS**
+
+    private int getAvailableDriverCount() {
         try {
-            // Call driver service to check availability
             String driverServiceUrl = "http://localhost:4768/api/driver/available-count";
-            Integer availableCount = restTemplate.getForObject(driverServiceUrl, Integer.class);
-            return availableCount != null && availableCount > 0;
+            Integer count = restTemplate.getForObject(driverServiceUrl, Integer.class);
+            return count != null ? count : 0;
         } catch (Exception e) {
-            log.warn("Failed to check driver availability, assuming drivers are available", e);
-            return true; // Assume drivers are available if service is down
+            log.warn("Failed to check driver availability", e);
+            return 0; // Fail safe
         }
     }
 
-    private void queueRideRequest(RideRequest rideRequest, CallTaxiRequest request) {
+    private void queueRideRequestWithTimeout(RideRequest rideRequest, CallTaxiRequest request) {
         try {
             UUID sagaId = UUID.randomUUID();
             ZonedDateTime now = ZonedDateTime.now();
-
-            // Create driver request event for later processing
-            DriverRequestEvent driverRequestEvent = DriverRequestEvent.builder()
-                    .sagaId(sagaId)
-                    .rideRequestId(rideRequest.getId())
-                    .customerEmail(request.getCustomerEmail())
-                    .pickupLocation(rideRequest.getPickupLocation())
-                    .destinationLocation(rideRequest.getDestinationLocation())
-                    .estimatedPrice(rideRequest.getEstimatedPrice())
-                    .build();
-
-            String payload = objectMapper.writeValueAsString(driverRequestEvent);
 
             QueuedRequest queuedRequest = QueuedRequest.builder()
                     .rideRequestId(rideRequest.getId())
                     .sagaId(sagaId)
                     .customerEmail(request.getCustomerEmail())
-                    .driverRequestPayload(payload)
+                    .driverRequestPayload(createDriverRequestPayload(rideRequest, sagaId))
                     .queuedAt(now)
-                    .expiresAt(now.plusMinutes(10)) // 10 minutes timeout
-                    .priority(1) // Default priority
+                    .expiresAt(now.plusMinutes(10)) // **10-minute timeout**
+                    .priority(1)
                     .status("QUEUED")
                     .build();
 
@@ -386,7 +352,100 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
 
         } catch (Exception e) {
             log.error("Failed to queue ride request", e);
+            throw new RuntimeException("Failed to queue ride request", e);
         }
+    }
+
+    private String createDriverRequestPayload(RideRequest rideRequest, UUID sagaId) throws Exception {
+        // This will be used when processing from queue
+        PaymentRequestEvent paymentEvent = PaymentRequestEvent.builder()
+                .sagaId(sagaId)
+                .rideRequestId(rideRequest.getId())
+                .customerEmail(rideRequest.getCustomerEmail())
+                .amount(rideRequest.getEstimatedPrice())
+                .description("Taxi ride payment")
+                .build();
+
+        return objectMapper.writeValueAsString(paymentEvent);
+    }
+
+    private boolean processQueuedRequest(QueuedRequest queuedRequest) {
+        try {
+            // Deserialize and process payment request
+            PaymentRequestEvent paymentEvent = objectMapper.readValue(
+                    queuedRequest.getDriverRequestPayload(), PaymentRequestEvent.class);
+
+            saveToOutbox(paymentEvent, queuedRequest.getSagaId(), "payment-requests");
+            return true;
+
+        } catch (Exception e) {
+            log.error("Failed to process queued request", e);
+            return false;
+        }
+    }
+
+    private void handleExpiredQueuedRequest(QueuedRequest queuedRequest) {
+        queuedRequest.setStatus("EXPIRED");
+        queuedRequestRepository.save(queuedRequest);
+
+        rideRequestRepository.findById(queuedRequest.getRideRequestId()).ifPresent(rideRequest -> {
+            rideRequest.setStatus(RideStatus.EXPIRED);
+            rideRequest.setCompletedAt(ZonedDateTime.now());
+            rideRequestRepository.save(rideRequest);
+
+            resetCustomerToAvailable(rideRequest.getCustomerEmail());
+            log.info("Expired queued request for customer: {}", rideRequest.getCustomerEmail());
+        });
+    }
+
+    private void initiateRefund(RideRequest rideRequest) {
+        try {
+            rideRequest.setStatus(RideStatus.REFUND_PROCESSING);
+            rideRequestRepository.save(rideRequest);
+
+            PaymentRefundEvent refundEvent = PaymentRefundEvent.builder()
+                    .sagaId(UUID.randomUUID())
+                    .rideRequestId(rideRequest.getId())
+                    .customerEmail(rideRequest.getCustomerEmail())
+                    .amount(rideRequest.getEstimatedPrice())
+                    .reason("Ride cancelled/expired")
+                    .build();
+
+            saveToOutbox(refundEvent, refundEvent.getSagaId(), "payment-refunds");
+            log.info("Initiated refund for ride: {}", rideRequest.getId());
+
+        } catch (Exception e) {
+            log.error("Failed to initiate refund for ride: {}", rideRequest.getId(), e);
+        }
+    }
+
+    private void releaseDriver(String driverEmail, UUID rideRequestId, String customerEmail, String status) {
+        DriverCompletionEvent driverEvent = DriverCompletionEvent.builder()
+                .driverEmail(driverEmail)
+                .rideRequestId(rideRequestId)
+                .customerEmail(customerEmail)
+                .status(status)
+                .build();
+
+        saveToOutbox(driverEvent, UUID.randomUUID(), "driver-completion");
+        log.info("Released driver {} for ride completion: {}", driverEmail, status);
+    }
+
+    private void resetCustomerToAvailable(String customerEmail) {
+        customerRepository.findByEmail(customerEmail).ifPresent(customer -> {
+            customer.setStatus(CustomerStatus.AVAILABLE);
+            customer.setCurrentRideRequestId(null);
+            customerRepository.save(customer);
+            log.info("Reset customer {} to AVAILABLE", customerEmail);
+        });
+    }
+
+    private void removeFromQueue(UUID rideRequestId) {
+        queuedRequestRepository.findByRideRequestId(rideRequestId).ifPresent(queuedRequest -> {
+            queuedRequest.setStatus("CANCELLED");
+            queuedRequestRepository.save(queuedRequest);
+            log.info("Removed ride {} from queue", rideRequestId);
+        });
     }
 
     private Customer findOrCreateCustomer(String email) {
@@ -394,7 +453,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                 .orElseGet(() -> {
                     Customer newCustomer = Customer.builder()
                             .email(email)
-                            .name("Customer") // In real app, get from JWT or registration
+                            .name("Customer")
                             .status(CustomerStatus.AVAILABLE)
                             .build();
                     return customerRepository.save(newCustomer);
@@ -404,6 +463,22 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     private void validateCustomerCanCallTaxi(Customer customer) {
         if (customer.getStatus() != CustomerStatus.AVAILABLE) {
             throw new RuntimeException("Customer is not available for new rides. Current status: " + customer.getStatus());
+        }
+
+        // **Additional validation: Check for any active rides**
+        boolean hasActiveRide = rideRequestRepository
+                .findByCustomerEmailAndStatus(customer.getEmail(), RideStatus.CREATED).isPresent() ||
+                rideRequestRepository
+                        .findByCustomerEmailAndStatus(customer.getEmail(), RideStatus.PAYMENT_PROCESSING).isPresent() ||
+                rideRequestRepository
+                        .findByCustomerEmailAndStatus(customer.getEmail(), RideStatus.DRIVER_SEARCHING).isPresent() ||
+                rideRequestRepository
+                        .findByCustomerEmailAndStatus(customer.getEmail(), RideStatus.DRIVER_ASSIGNED).isPresent() ||
+                rideRequestRepository
+                        .findByCustomerEmailAndStatus(customer.getEmail(), RideStatus.RIDE_STARTED).isPresent();
+
+        if (hasActiveRide) {
+            throw new RuntimeException("Customer already has an active ride request");
         }
     }
 
@@ -419,9 +494,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                 .createdAt(ZonedDateTime.now())
                 .build();
 
-        // Calculate estimated price
         rideRequest.setEstimatedPrice(rideRequest.calculateEstimatedPrice());
-
         return rideRequest;
     }
 
@@ -461,6 +534,8 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             case DRIVER_UNAVAILABLE -> "No drivers available nearby";
             case CANCELLED -> "Ride cancelled";
             case EXPIRED -> "Request expired after 10 minutes";
+            case REFUND_PROCESSING -> "Processing refund...";
+            case REFUND_COMPLETED -> "Refund completed";
             default -> "Unknown status";
         };
     }
