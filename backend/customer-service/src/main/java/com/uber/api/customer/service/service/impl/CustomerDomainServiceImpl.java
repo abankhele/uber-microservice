@@ -14,6 +14,7 @@ import com.uber.api.shared.constants.CustomerStatus;
 import com.uber.api.shared.constants.RideStatus;
 import com.uber.api.shared.entities.Location;
 import com.uber.api.shared.entities.RideRequest;
+import com.uber.api.shared.events.DriverCompletionEvent;
 import com.uber.api.shared.events.PaymentRequestEvent;
 import com.uber.api.shared.outbox.OutboxStatus;
 import com.uber.api.shared.saga.SagaStatus;
@@ -119,15 +120,38 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         customer.setCurrentRideRequestId(null);
         customerRepository.save(customer);
 
-        // Reset driver status
+        // **CRITICAL FIX: Reset driver status via event**
         if (activeRide.getDriverEmail() != null) {
-            // You could add a call to driver service to reset driver status
-            log.info("Driver {} should be notified that ride is completed", activeRide.getDriverEmail());
+            DriverCompletionEvent driverEvent = DriverCompletionEvent.builder()
+                    .driverEmail(activeRide.getDriverEmail())
+                    .rideRequestId(activeRide.getId())
+                    .customerEmail(customerEmail)
+                    .status("COMPLETED")
+                    .build();
+
+            saveToOutbox(driverEvent, UUID.randomUUID(), "driver-completion");
+            log.info("Driver completion event sent for driver: {}", activeRide.getDriverEmail());
         }
 
         log.info("Ride completed successfully for customer: {}", customerEmail);
     }
 
+    @Override
+    @Transactional
+    public void startRide(String customerEmail) {
+        log.info("Starting ride for customer: {}", customerEmail);
+
+        // Find ride with DRIVER_ASSIGNED status
+        RideRequest assignedRide = rideRequestRepository
+                .findByCustomerEmailAndStatus(customerEmail, RideStatus.DRIVER_ASSIGNED)
+                .orElseThrow(() -> new RuntimeException("No assigned ride found for customer: " + customerEmail));
+
+        // Update ride status to RIDE_STARTED
+        assignedRide.setStatus(RideStatus.RIDE_STARTED);
+        rideRequestRepository.save(assignedRide);
+
+        log.info("Ride started successfully for customer: {}", customerEmail);
+    }
 
     private Customer findOrCreateCustomer(String email) {
         return customerRepository.findByEmail(email)
@@ -224,21 +248,4 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             throw new RuntimeException("Failed to save event to outbox", e);
         }
     }
-    @Override
-    @Transactional
-    public void startRide(String customerEmail) {
-        log.info("Starting ride for customer: {}", customerEmail);
-
-        // Find ride with DRIVER_ASSIGNED status
-        RideRequest assignedRide = rideRequestRepository
-                .findByCustomerEmailAndStatus(customerEmail, RideStatus.DRIVER_ASSIGNED)
-                .orElseThrow(() -> new RuntimeException("No assigned ride found for customer: " + customerEmail));
-
-        // Update ride status to RIDE_STARTED
-        assignedRide.setStatus(RideStatus.RIDE_STARTED);
-        rideRequestRepository.save(assignedRide);
-
-        log.info("Ride started successfully for customer: {}", customerEmail);
-    }
-
 }

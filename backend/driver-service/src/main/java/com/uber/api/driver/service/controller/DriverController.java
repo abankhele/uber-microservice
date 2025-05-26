@@ -45,6 +45,19 @@ public class DriverController {
             return ResponseEntity.badRequest().body("Failed to update driver location: " + e.getMessage());
         }
     }
+    @PostMapping("/reset-all")
+    public ResponseEntity<String> resetAllDrivers() {
+        log.info("Resetting all drivers to AVAILABLE status");
+
+        try {
+            driverDomainService.resetAllDriversToAvailable();
+            return ResponseEntity.ok("All drivers reset to AVAILABLE status");
+        } catch (Exception e) {
+            log.error("Error resetting drivers", e);
+            return ResponseEntity.badRequest().body("Failed to reset drivers: " + e.getMessage());
+        }
+    }
+
 
     @GetMapping("/health")
     public ResponseEntity<String> health() {

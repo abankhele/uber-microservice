@@ -134,6 +134,47 @@ public class DriverDomainServiceImpl implements DriverDomainService {
         );
     }
 
+    @Override
+    @Transactional
+    public void resetAllDriversToAvailable() {
+        log.info("Resetting all drivers to AVAILABLE status");
+
+        List<Driver> allDrivers = driverRepository.findAll();
+
+        for (Driver driver : allDrivers) {
+            if (driver.getStatus() != DriverStatus.AVAILABLE) {
+                log.info("Resetting driver {} from {} to AVAILABLE",
+                        driver.getEmail(), driver.getStatus());
+
+                driver.setStatus(DriverStatus.AVAILABLE);
+                driver.setCurrentRideRequestId(null);
+                driverRepository.save(driver);
+            }
+        }
+
+        log.info("Reset {} drivers to AVAILABLE status", allDrivers.size());
+    }
+
+    @Override
+    @Transactional
+    public void completeDriverRide(String driverEmail) {
+        log.info("Completing ride for driver: {}", driverEmail);
+
+        driverRepository.findByEmail(driverEmail).ifPresentOrElse(
+                driver -> {
+                    log.info("Resetting driver {} status from {} to AVAILABLE",
+                            driverEmail, driver.getStatus());
+
+                    driver.setStatus(DriverStatus.AVAILABLE);
+                    driver.setCurrentRideRequestId(null);
+                    driverRepository.save(driver);
+
+                    log.info("Driver {} is now AVAILABLE for new rides", driverEmail);
+                },
+                () -> log.warn("Driver not found: {}", driverEmail)
+        );
+    }
+
     private Driver findNearestAvailableDriver(DriverRequestEvent driverRequest) {
         // Get pickup location
         Double pickupLat = driverRequest.getPickupLocation().getLatitude();

@@ -7,4 +7,6 @@ public interface DriverDomainService {
     DriverResponseEvent assignDriver(DriverRequestEvent driverRequest);
     void updateDriverStatus(String driverEmail, com.uber.api.shared.constants.DriverStatus status);
     void updateDriverLocation(String driverEmail, Double latitude, Double longitude, String city);
+    void resetAllDriversToAvailable();
+    void completeDriverRide(String driverEmail);
 }
