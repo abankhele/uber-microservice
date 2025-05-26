@@ -13,11 +13,11 @@ public class QueueAndTimeoutScheduler {
 
     private final CustomerDomainService customerDomainService;
 
-    // Run the queue processor every second
-    @Scheduled(fixedDelay = 1000)
+    // **FIXED: Reasonable queue processing interval**
+    @Scheduled(fixedDelay = 5000) // Every 5 seconds
     public void processQueuedRequests() {
         try {
-            log.debug("🔄 Running aggressive queue processor...");
+            log.debug("🔄 Running queue processor...");
             customerDomainService.processQueuedRequests();
         } catch (Exception e) {
             log.error("Error processing queued requests", e);

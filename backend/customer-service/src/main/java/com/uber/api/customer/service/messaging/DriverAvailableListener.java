@@ -20,16 +20,11 @@ public class DriverAvailableListener {
         log.info("🔄 DRIVER AVAILABLE EVENT RECEIVED: {}", driverEmail);
 
         try {
-            // **TRIGGER BOTH immediate and persistent queue processing**
-            rideMatchingService.onDriverAvailable();
+            // **IMMEDIATE QUEUE PROCESSING**
+            log.info("🔄 Triggering immediate queue processing for available driver: {}", driverEmail);
+            customerDomainService.processQueuedRequests();
 
-            // **ADDITIONAL: Trigger multiple queue processing attempts**
-            for (int i = 0; i < 3; i++) {
-                customerDomainService.processQueuedRequests();
-                Thread.sleep(1000);
-            }
-
-            log.info("✅ Queue processing triggered by driver available event");
+            log.info("✅ Queue processing completed for driver available event");
         } catch (Exception e) {
             log.error("❌ Error processing queue after driver available event", e);
         }

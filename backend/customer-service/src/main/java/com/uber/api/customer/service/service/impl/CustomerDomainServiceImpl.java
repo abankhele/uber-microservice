@@ -11,7 +11,6 @@ import com.uber.api.customer.service.repository.CustomerRepository;
 import com.uber.api.customer.service.repository.QueuedRequestRepository;
 import com.uber.api.customer.service.repository.RideRequestRepository;
 import com.uber.api.customer.service.service.CustomerDomainService;
-import com.uber.api.customer.service.service.RideMatchingService;
 import com.uber.api.shared.constants.CustomerStatus;
 import com.uber.api.shared.constants.RideStatus;
 import com.uber.api.shared.entities.Location;
@@ -25,7 +24,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.client.RestTemplate;
 
 import java.time.ZonedDateTime;
@@ -136,8 +134,8 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             releaseDriver(activeRide.getDriverEmail(), activeRide.getId(), customerEmail, "COMPLETED");
         }
 
-        // **CRITICAL: Release slot when ride completes (like Uber's resource management)**
-        RideMatchingService.releaseSlot(customerEmail);
+        // **REMOVED BROKEN SLOT LOGIC**
+        // RideMatchingService.releaseSlot(customerEmail);
 
         // **CRITICAL: Trigger queue processing**
         log.info("🔄 TRIGGERING IMMEDIATE QUEUE PROCESSING AFTER COMPLETION");
@@ -145,6 +143,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
 
         log.info("✅ RIDE COMPLETED for customer: {}", customerEmail);
     }
+
 
     @Override
     @Transactional
@@ -211,10 +210,11 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             return;
         }
 
-        // **DIRECT FIX: Process requests directly without complex queue logic**
+        // **FIXED: Process exactly the number of available drivers**
         int processedCount = 0;
         for (QueuedRequest queuedRequest : queuedRequests) {
             if (processedCount >= availableDrivers) {
+                log.info("Processed {} requests, no more drivers available", processedCount);
                 break;
             }
 
@@ -223,9 +223,10 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             }
 
             try {
-                log.info("🔄 DIRECTLY PROCESSING queued request for: {}", queuedRequest.getCustomerEmail());
+                log.info("🔄 Processing queued request for: {} (position: {})",
+                        queuedRequest.getCustomerEmail(), processedCount + 1);
 
-                // **DIRECT SAGA START: Skip queue processing, start SAGA directly**
+                // **PROPER SAGA START: Reset status and start SAGA**
                 RideRequest rideRequest = rideRequestRepository.findById(queuedRequest.getRideRequestId()).orElse(null);
                 if (rideRequest != null) {
                     // Reset status and start SAGA
@@ -240,11 +241,19 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                     queuedRequestRepository.save(queuedRequest);
 
                     processedCount++;
-                    log.info("✅ DIRECTLY STARTED SAGA for queued request: {}", queuedRequest.getCustomerEmail());
+                    log.info("✅ Successfully processed queued request: {} (order: {})",
+                            queuedRequest.getCustomerEmail(), processedCount);
                 }
 
             } catch (Exception e) {
-                log.error("❌ Error processing queued request", e);
+                log.error("❌ Error processing queued request for: {}", queuedRequest.getCustomerEmail(), e);
+                // Reset to queued for retry
+                try {
+                    queuedRequest.setStatus("QUEUED");
+                    queuedRequestRepository.save(queuedRequest);
+                } catch (Exception ex) {
+                    log.error("Failed to reset request status", ex);
+                }
             }
         }
 
@@ -284,27 +293,14 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                     .status("QUEUED")
                     .build();
 
-            queuedRequestRepository.save(queuedRequest);
-            log.info("🔄 ADDED TO QUEUE: {} for customer: {} at time: {}",
-                    rideRequest.getId(), rideRequest.getCustomerEmail(), now);
+            QueuedRequest saved = queuedRequestRepository.save(queuedRequest);
+            log.info("✅ ADDED TO QUEUE: ID={}, Customer={}, Status={}, QueuedAt={}",
+                    saved.getId(), saved.getCustomerEmail(), saved.getStatus(), saved.getQueuedAt());
 
         } catch (Exception e) {
             log.error("Failed to add to queue", e);
             throw new RuntimeException("Failed to add to queue", e);
         }
-    }
-
-    private void handleExpiredQueuedRequest(QueuedRequest queuedRequest) {
-        queuedRequest.setStatus("EXPIRED");
-        queuedRequestRepository.save(queuedRequest);
-
-        rideRequestRepository.findById(queuedRequest.getRideRequestId()).ifPresent(rideRequest -> {
-            rideRequest.setStatus(RideStatus.EXPIRED);
-            rideRequest.setCompletedAt(ZonedDateTime.now());
-            rideRequestRepository.save(rideRequest);
-
-            resetCustomerToAvailable(rideRequest.getCustomerEmail());
-        });
     }
 
     private int getAvailableDriverCount() {
@@ -348,35 +344,6 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             queuedRequestRepository.save(queuedRequest);
             log.info("Removed ride {} from queue", rideRequestId);
         });
-    }
-
-    private Customer findOrCreateCustomer(String email) {
-        return customerRepository.findByEmail(email)
-                .orElseGet(() -> {
-                    Customer newCustomer = Customer.builder()
-                            .email(email)
-                            .name("Customer")
-                            .status(CustomerStatus.AVAILABLE)
-                            .build();
-                    return customerRepository.save(newCustomer);
-                });
-    }
-
-    private void validateCustomerCanCallTaxi(Customer customer) {
-        if (customer.getStatus() != CustomerStatus.AVAILABLE) {
-            throw new RuntimeException("Customer is not available for new rides. Current status: " + customer.getStatus());
-        }
-
-        boolean hasActiveRide = rideRequestRepository
-                .findByCustomerEmailAndStatus(customer.getEmail(), RideStatus.CREATED).isPresent() ||
-                rideRequestRepository.findByCustomerEmailAndStatus(customer.getEmail(), RideStatus.PAYMENT_PROCESSING).isPresent() ||
-                rideRequestRepository.findByCustomerEmailAndStatus(customer.getEmail(), RideStatus.DRIVER_SEARCHING).isPresent() ||
-                rideRequestRepository.findByCustomerEmailAndStatus(customer.getEmail(), RideStatus.DRIVER_ASSIGNED).isPresent() ||
-                rideRequestRepository.findByCustomerEmailAndStatus(customer.getEmail(), RideStatus.RIDE_STARTED).isPresent();
-
-        if (hasActiveRide) {
-            throw new RuntimeException("Customer already has an active ride request");
-        }
     }
 
     private RideRequest createRideRequest(CallTaxiRequest request) {
@@ -499,7 +466,6 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         }
     }
 
-    @GetMapping("/debug/queue-status")
     public void debugQueueContents() {
         List<QueuedRequest> allRequests = queuedRequestRepository.findAll();
         log.info("=== ALL QUEUED REQUESTS IN DATABASE ===");
