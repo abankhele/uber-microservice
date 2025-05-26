@@ -69,6 +69,19 @@ public class DriverController {
         }
     }
 
+    @GetMapping("/busy-count")
+    public ResponseEntity<Integer> getBusyDriverCount() {
+        try {
+            int count = driverDomainService.getBusyDriverCount();
+            log.info("Busy driver count requested: {}", count);
+            return ResponseEntity.ok(count);
+        } catch (Exception e) {
+            log.error("Error getting busy driver count", e);
+            return ResponseEntity.ok(0);
+        }
+    }
+
+
 
 
     @GetMapping("/health")

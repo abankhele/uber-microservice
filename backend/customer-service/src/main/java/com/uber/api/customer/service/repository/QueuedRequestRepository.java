@@ -13,7 +13,8 @@ import java.util.UUID;
 @Repository
 public interface QueuedRequestRepository extends JpaRepository<QueuedRequest, UUID> {
 
-    @Query("SELECT q FROM QueuedRequest q WHERE q.status = 'QUEUED' ORDER BY q.priority ASC, q.queuedAt ASC")
+    // **CRITICAL FIX: Order by queuedAt for true FIFO**
+    @Query("SELECT q FROM QueuedRequest q WHERE q.status = 'QUEUED' ORDER BY q.queuedAt ASC")
     List<QueuedRequest> findQueuedRequestsOrderedByPriority();
 
     List<QueuedRequest> findByStatusAndExpiresAtBefore(String status, ZonedDateTime expireTime);

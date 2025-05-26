@@ -263,4 +263,9 @@ public class DriverDomainServiceImpl implements DriverDomainService {
             throw new RuntimeException("Failed to save event to outbox", e);
         }
     }
+
+    @Override
+    public int getBusyDriverCount() {
+        return (int) driverRepository.countByStatus(DriverStatus.BUSY);
+    }
 }

@@ -26,11 +26,12 @@ public class QueuedRequest {
     private String customerEmail;
 
     @Column(columnDefinition = "TEXT")
-    private String driverRequestPayload; // Serialized DriverRequestEvent
+    private String driverRequestPayload;
 
     private ZonedDateTime queuedAt;
-    private ZonedDateTime expiresAt; // 10 minutes from queuedAt
-    private Integer priority; // 1 = highest priority
+    private ZonedDateTime expiresAt;
+
+    // **CRITICAL FIX: Remove priority, use queuedAt for ordering**
     private String status; // QUEUED, PROCESSING, COMPLETED, EXPIRED, CANCELLED
 
     @Version
