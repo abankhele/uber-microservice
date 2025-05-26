@@ -1,18 +1,24 @@
 package com.uber.api.customer.service.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uber.api.customer.service.dto.CallTaxiRequest;
 import com.uber.api.customer.service.dto.RideStatusResponse;
 import com.uber.api.customer.service.entity.Customer;
 import com.uber.api.customer.service.repository.CustomerRepository;
+import com.uber.api.customer.service.repository.QueuedRequestRepository;
 import com.uber.api.customer.service.repository.RideRequestRepository;
 import com.uber.api.shared.constants.CustomerStatus;
 import com.uber.api.shared.constants.RideStatus;
+import com.uber.api.shared.entities.QueuedRequest;
 import com.uber.api.shared.entities.RideRequest;
+import com.uber.api.shared.events.PaymentRequestEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.client.RestTemplate;
+
+import java.time.ZonedDateTime;
+import java.util.UUID;
 
 @Slf4j
 @Service
@@ -22,11 +28,12 @@ public class RideMatchingService {
     private final CustomerDomainService customerDomainService;
     private final CustomerRepository customerRepository;
     private final RideRequestRepository rideRequestRepository;
-    private final RestTemplate restTemplate;
+    private final QueuedRequestRepository queuedRequestRepository;
+    private final ObjectMapper objectMapper;
 
     @Transactional
     public RideStatusResponse requestRide(CallTaxiRequest request) {
-        log.info("=== RIDE MATCHING REQUEST FOR: {} ===", request.getCustomerEmail());
+        log.info("=== SIMPLE RIDE REQUEST FOR: {} ===", request.getCustomerEmail());
 
         try {
             // Find or create customer
@@ -42,43 +49,58 @@ public class RideMatchingService {
             customer.setCurrentRideRequestId(savedRideRequest.getId());
             customerRepository.save(customer);
 
-            // **CRITICAL FIX: Check driver availability FIRST**
-            int availableDrivers = getAvailableDriverCount();
-            log.info("Available drivers: {} for customer: {}", availableDrivers, request.getCustomerEmail());
+            // **CRITICAL DEBUG: Add detailed logging**
+            log.info("🔄 ABOUT TO ADD TO QUEUE for: {}", request.getCustomerEmail());
 
-            if (availableDrivers > 0) {
-                // **IMMEDIATE PROCESSING - Start SAGA directly**
-                log.info("✅ IMMEDIATE PROCESSING: {} drivers available", availableDrivers);
-                customerDomainService.startSagaForRide(savedRideRequest);
+            savedRideRequest.setStatus(RideStatus.DRIVER_SEARCHING);
+            rideRequestRepository.save(savedRideRequest);
 
-                return RideStatusResponse.builder()
+            // **DIRECT QUEUE ADDITION - BYPASS addToExistingQueue**
+            try {
+                log.info("🔄 STARTING DIRECT QUEUE ADDITION for: {}", request.getCustomerEmail());
+
+                UUID sagaId = UUID.randomUUID();
+                ZonedDateTime now = ZonedDateTime.now();
+
+                PaymentRequestEvent paymentEvent = PaymentRequestEvent.builder()
+                        .sagaId(sagaId)
                         .rideRequestId(savedRideRequest.getId())
-                        .status(RideStatus.CREATED)
-                        .customerEmail(request.getCustomerEmail())
-                        .estimatedPrice(savedRideRequest.getEstimatedPrice())
-                        .createdAt(savedRideRequest.getCreatedAt())
-                        .statusMessage("Processing your ride request...")
+                        .customerEmail(savedRideRequest.getCustomerEmail())
+                        .amount(savedRideRequest.getEstimatedPrice())
+                        .description("Taxi ride payment")
                         .build();
 
-            } else {
-                // **QUEUE FOR LATER PROCESSING**
-                log.warn("🚫 NO DRIVERS AVAILABLE - ADDING TO QUEUE: {}", request.getCustomerEmail());
+                String payload = objectMapper.writeValueAsString(paymentEvent);
+                log.info("✅ Created payment event payload for: {}", request.getCustomerEmail());
 
-                savedRideRequest.setStatus(RideStatus.DRIVER_SEARCHING);
-                rideRequestRepository.save(savedRideRequest);
-
-                // Use existing persistent queue system
-                customerDomainService.addToExistingQueue(savedRideRequest);
-
-                return RideStatusResponse.builder()
+                QueuedRequest queuedRequest = QueuedRequest.builder()
                         .rideRequestId(savedRideRequest.getId())
-                        .status(RideStatus.DRIVER_SEARCHING)
-                        .customerEmail(request.getCustomerEmail())
-                        .estimatedPrice(savedRideRequest.getEstimatedPrice())
-                        .createdAt(savedRideRequest.getCreatedAt())
-                        .statusMessage("All drivers are busy. You're in queue for the next available driver. Request will expire in 10 minutes.")
+                        .sagaId(sagaId)
+                        .customerEmail(savedRideRequest.getCustomerEmail())
+                        .driverRequestPayload(payload)
+                        .queuedAt(now)
+                        .expiresAt(now.plusMinutes(10))
+                        .status("QUEUED")
                         .build();
+
+                log.info("🔄 About to save QueuedRequest to database for: {}", request.getCustomerEmail());
+                QueuedRequest savedQueuedRequest = queuedRequestRepository.save(queuedRequest);
+                log.info("✅ SUCCESSFULLY SAVED TO QUEUE: ID={}, Customer={}, Status={}",
+                        savedQueuedRequest.getId(), savedQueuedRequest.getCustomerEmail(), savedQueuedRequest.getStatus());
+
+            } catch (Exception e) {
+                log.error("❌ FAILED TO DIRECTLY ADD TO QUEUE for: {}", request.getCustomerEmail(), e);
+                throw new RuntimeException("Failed to add to queue", e);
             }
+
+            return RideStatusResponse.builder()
+                    .rideRequestId(savedRideRequest.getId())
+                    .status(RideStatus.DRIVER_SEARCHING)
+                    .customerEmail(request.getCustomerEmail())
+                    .estimatedPrice(savedRideRequest.getEstimatedPrice())
+                    .createdAt(savedRideRequest.getCreatedAt())
+                    .statusMessage("Looking for available driver. Request will expire in 10 minutes if no driver is found.")
+                    .build();
 
         } catch (Exception e) {
             log.error("❌ ERROR processing ride request for {}: {}", request.getCustomerEmail(), e.getMessage());
@@ -86,23 +108,9 @@ public class RideMatchingService {
         }
     }
 
-    /**
-     * **TRIGGER QUEUE PROCESSING when driver becomes available**
-     */
     public void onDriverAvailable() {
-        log.info("🔄 Driver became available - triggering persistent queue processing");
+        log.info("🔄 Driver became available - triggering queue processing");
         customerDomainService.processQueuedRequests();
-    }
-
-    private int getAvailableDriverCount() {
-        try {
-            String driverServiceUrl = "http://localhost:4768/api/driver/available-count";
-            Integer count = restTemplate.getForObject(driverServiceUrl, Integer.class);
-            return count != null ? count : 0;
-        } catch (Exception e) {
-            log.error("Failed to check driver availability", e);
-            return 0;
-        }
     }
 
     private Customer findOrCreateCustomer(String email) {

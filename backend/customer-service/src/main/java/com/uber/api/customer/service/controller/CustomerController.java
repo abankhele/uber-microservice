@@ -41,6 +41,17 @@ public class CustomerController {
         }
     }
 
+    @GetMapping("/debug/queue-contents")
+    public ResponseEntity<String> debugQueueContents() {
+        try {
+            customerDomainService.debugQueueContents();
+            return ResponseEntity.ok("Queue contents logged - check console");
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body("Error: " + e.getMessage());
+        }
+    }
+
+
 
     @GetMapping("/status/{customerEmail}")
     public ResponseEntity<RideStatusResponse> getRideStatus(@PathVariable String customerEmail) {

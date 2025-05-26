@@ -23,7 +23,9 @@ import com.uber.api.shared.saga.SagaStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.client.RestTemplate;
 
 import java.time.ZonedDateTime;
@@ -134,12 +136,32 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             releaseDriver(activeRide.getDriverEmail(), activeRide.getId(), customerEmail, "COMPLETED");
         }
 
-        // **CRITICAL FIX: Immediately trigger queue processing**
+        // **CRITICAL FIX: Multiple queue processing attempts with delays**
         log.info("🔄 TRIGGERING IMMEDIATE QUEUE PROCESSING AFTER COMPLETION");
+
+        // Process queue immediately
         processQueuedRequests();
+
+        // Wait and process again to handle timing issues
+        try {
+            Thread.sleep(2000);
+            log.info("🔄 SECOND QUEUE PROCESSING ATTEMPT");
+            processQueuedRequests();
+
+            Thread.sleep(3000);
+            log.info("🔄 THIRD QUEUE PROCESSING ATTEMPT");
+            processQueuedRequests();
+
+            Thread.sleep(5000);
+            log.info("🔄 FOURTH QUEUE PROCESSING ATTEMPT");
+            processQueuedRequests();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
 
         log.info("✅ RIDE COMPLETED for customer: {}", customerEmail);
     }
+
 
     @Override
     @Transactional
@@ -514,8 +536,9 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     public RideRequest createRideRequestFromRequest(CallTaxiRequest request) {
         return createRideRequest(request);
     }
-
+    @Override
     public void addToExistingQueue(RideRequest rideRequest) {
+        log.info("🔄 ADDING REQUEST TO EXISTING QUEUE: {}", rideRequest.getCustomerEmail());
         addToQueue(rideRequest);
     }
 
@@ -538,4 +561,30 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             throw new RuntimeException("Failed to start SAGA", e);
         }
     }
+
+    @GetMapping("/debug/queue-status")
+    public void debugQueueContents() {
+        List<QueuedRequest> allRequests = queuedRequestRepository.findAll();
+        log.info("=== ALL QUEUED REQUESTS IN DATABASE ===");
+        log.info("Total requests in queue table: {}", allRequests.size());
+
+        for (QueuedRequest request : allRequests) {
+            log.info("ID: {}, Customer: {}, Status: {}, QueuedAt: {}",
+                    request.getId(), request.getCustomerEmail(), request.getStatus(), request.getQueuedAt());
+        }
+        log.info("=== END ALL REQUESTS ===");
+
+        List<QueuedRequest> queuedOnly = queuedRequestRepository.findQueuedRequestsOrderedByPriority();
+        log.info("=== REQUESTS WITH STATUS 'QUEUED' ===");
+        log.info("Requests with status 'QUEUED': {}", queuedOnly.size());
+
+        for (QueuedRequest request : queuedOnly) {
+            log.info("QUEUED: ID={}, Customer={}, Status={}",
+                    request.getId(), request.getCustomerEmail(), request.getStatus());
+        }
+        log.info("=== END QUEUED ONLY ===");
+    }
+
+
+
 }

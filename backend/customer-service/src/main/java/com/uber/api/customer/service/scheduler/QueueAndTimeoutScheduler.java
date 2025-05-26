@@ -13,11 +13,11 @@ public class QueueAndTimeoutScheduler {
 
     private final CustomerDomainService customerDomainService;
 
-    // **CRITICAL FIX: More frequent queue processing**
-    @Scheduled(fixedDelay = 2000) // Every 2 seconds
+    // **CRITICAL FIX: More aggressive queue processing**
+    @Scheduled(fixedDelay = 1000) // Every 1 second
     public void processQueuedRequests() {
         try {
-            log.debug("🔄 Running continuous queue processor...");
+            log.debug("🔄 Running aggressive queue processor...");
             customerDomainService.processQueuedRequests();
         } catch (Exception e) {
             log.error("Error processing queued requests", e);

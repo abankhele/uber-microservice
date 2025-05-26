@@ -18,4 +18,6 @@ public interface CustomerDomainService {
     RideRequest createRideRequestFromRequest(CallTaxiRequest request);
     void addToExistingQueue(RideRequest rideRequest);
     void startSagaForRide(RideRequest rideRequest);
+
+    void debugQueueContents();
 }
