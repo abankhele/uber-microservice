@@ -21,4 +21,6 @@ public interface DriverRepository extends JpaRepository<Driver, UUID> {
 
     @Query("SELECT d FROM Driver d WHERE d.status = 'AVAILABLE' ORDER BY d.id")
     List<Driver> findAllAvailableDrivers();
+    long countByStatus(DriverStatus status);
+
 }

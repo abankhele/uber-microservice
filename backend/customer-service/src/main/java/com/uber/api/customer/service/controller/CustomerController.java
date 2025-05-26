@@ -30,7 +30,11 @@ public class CustomerController {
 
         } catch (Exception e) {
             log.error("Error processing taxi call request for customer: {}", request.getCustomerEmail(), e);
-            return ResponseEntity.badRequest().build();
+            return ResponseEntity.badRequest()
+                    .body(RideStatusResponse.builder()
+                            .customerEmail(request.getCustomerEmail())
+                            .statusMessage("Failed to process taxi request: " + e.getMessage())
+                            .build());
         }
     }
 
@@ -44,9 +48,14 @@ public class CustomerController {
 
         } catch (Exception e) {
             log.error("Error getting ride status for customer: {}", customerEmail, e);
-            return ResponseEntity.badRequest().build();
+            return ResponseEntity.badRequest()
+                    .body(RideStatusResponse.builder()
+                            .customerEmail(customerEmail)
+                            .statusMessage("Failed to get ride status: " + e.getMessage())
+                            .build());
         }
     }
+
     @PostMapping("/start/{customerEmail}")
     public ResponseEntity<String> startRide(@PathVariable String customerEmail) {
         log.info("Starting ride for customer: {}", customerEmail);
@@ -61,7 +70,6 @@ public class CustomerController {
         }
     }
 
-
     @PostMapping("/complete/{customerEmail}")
     public ResponseEntity<String> completeRide(@PathVariable String customerEmail) {
         log.info("Completing ride for customer: {}", customerEmail);
@@ -74,5 +82,24 @@ public class CustomerController {
             log.error("Error completing ride for customer: {}", customerEmail, e);
             return ResponseEntity.badRequest().body("Failed to complete ride: " + e.getMessage());
         }
+    }
+
+    @PostMapping("/cancel/{customerEmail}")
+    public ResponseEntity<String> cancelRide(@PathVariable String customerEmail) {
+        log.info("Cancelling ride for customer: {}", customerEmail);
+
+        try {
+            customerDomainService.cancelRide(customerEmail);
+            return ResponseEntity.ok("Ride cancelled successfully");
+
+        } catch (Exception e) {
+            log.error("Error cancelling ride for customer: {}", customerEmail, e);
+            return ResponseEntity.badRequest().body("Failed to cancel ride: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/health")
+    public ResponseEntity<String> health() {
+        return ResponseEntity.ok("Customer Service is healthy");
     }
 }

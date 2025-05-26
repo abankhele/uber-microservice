@@ -9,4 +9,6 @@ public interface DriverDomainService {
     void updateDriverLocation(String driverEmail, Double latitude, Double longitude, String city);
     void resetAllDriversToAvailable();
     void completeDriverRide(String driverEmail);
+    int getAvailableDriverCount();
+
 }

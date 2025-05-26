@@ -57,6 +57,17 @@ public class DriverController {
             return ResponseEntity.badRequest().body("Failed to reset drivers: " + e.getMessage());
         }
     }
+    @GetMapping("/available-count")
+    public ResponseEntity<Integer> getAvailableDriverCount() {
+        try {
+            int count = driverDomainService.getAvailableDriverCount();
+            return ResponseEntity.ok(count);
+        } catch (Exception e) {
+            log.error("Error getting available driver count", e);
+            return ResponseEntity.ok(0); // Return 0 if error
+        }
+    }
+
 
 
     @GetMapping("/health")

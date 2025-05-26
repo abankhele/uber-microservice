@@ -10,5 +10,6 @@ public enum RideStatus {
     RIDE_COMPLETED,     // Ride finished
     PAYMENT_FAILED,     // Payment processing failed
     DRIVER_UNAVAILABLE, // No driver available
-    CANCELLED           // Ride cancelled
+    CANCELLED,          // Ride cancelled by customer
+    EXPIRED             // Request expired after timeout
 }
