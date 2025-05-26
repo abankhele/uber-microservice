@@ -11,6 +11,7 @@ import com.uber.api.customer.service.repository.CustomerRepository;
 import com.uber.api.customer.service.repository.QueuedRequestRepository;
 import com.uber.api.customer.service.repository.RideRequestRepository;
 import com.uber.api.customer.service.service.CustomerDomainService;
+import com.uber.api.customer.service.service.RideMatchingService;
 import com.uber.api.shared.constants.CustomerStatus;
 import com.uber.api.shared.constants.RideStatus;
 import com.uber.api.shared.entities.Location;
@@ -134,8 +135,8 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             releaseDriver(activeRide.getDriverEmail(), activeRide.getId(), customerEmail, "COMPLETED");
         }
 
-        // **REMOVED BROKEN SLOT LOGIC**
-        // RideMatchingService.releaseSlot(customerEmail);
+        // **CRITICAL: Release slot when ride completes**
+        RideMatchingService.releaseSlot(customerEmail);
 
         // **CRITICAL: Trigger queue processing**
         log.info("🔄 TRIGGERING IMMEDIATE QUEUE PROCESSING AFTER COMPLETION");
@@ -202,6 +203,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             return;
         }
 
+        // **CRITICAL FIX: Check actual driver availability**
         int availableDrivers = getAvailableDriverCount();
         log.info("Found {} queued requests, {} available drivers", queuedRequests.size(), availableDrivers);
 
@@ -226,6 +228,13 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                 log.info("🔄 Processing queued request for: {} (position: {})",
                         queuedRequest.getCustomerEmail(), processedCount + 1);
 
+                // **CRITICAL FIX: Check driver availability before each request**
+                int currentAvailable = getAvailableDriverCount();
+                if (currentAvailable == 0) {
+                    log.info("No drivers available for queued request: {}", queuedRequest.getCustomerEmail());
+                    break;
+                }
+
                 // **PROPER SAGA START: Reset status and start SAGA**
                 RideRequest rideRequest = rideRequestRepository.findById(queuedRequest.getRideRequestId()).orElse(null);
                 if (rideRequest != null) {
@@ -236,13 +245,16 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                     // Start SAGA directly
                     startSagaForRide(rideRequest);
 
-                    // Mark queue as completed
-                    queuedRequest.setStatus("COMPLETED");
+                    // **CRITICAL: Only mark as completed if SAGA starts successfully**
+                    queuedRequest.setStatus("PROCESSING");
                     queuedRequestRepository.save(queuedRequest);
 
                     processedCount++;
-                    log.info("✅ Successfully processed queued request: {} (order: {})",
+                    log.info("✅ Successfully started SAGA for queued request: {} (order: {})",
                             queuedRequest.getCustomerEmail(), processedCount);
+
+                    // **WAIT FOR SAGA TO COMPLETE BEFORE PROCESSING NEXT**
+                    Thread.sleep(2000);
                 }
 
             } catch (Exception e) {

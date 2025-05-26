@@ -14,6 +14,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -23,6 +25,10 @@ public class RideMatchingService {
     private final CustomerRepository customerRepository;
     private final RideRequestRepository rideRequestRepository;
     private final RestTemplate restTemplate;
+
+    // **FIXED: Use atomic counter to track processing requests**
+    private static final AtomicInteger processingRequests = new AtomicInteger(0);
+    private static final int MAX_DRIVERS = 3;
 
     @Transactional
     public RideStatusResponse requestRide(CallTaxiRequest request) {
@@ -42,19 +48,17 @@ public class RideMatchingService {
             customer.setCurrentRideRequestId(savedRideRequest.getId());
             customerRepository.save(customer);
 
-            // **FIXED LOGIC: Use actual database counts + driver availability**
-            long activeRides = rideRequestRepository.countByStatus(RideStatus.DRIVER_ASSIGNED) +
-                    rideRequestRepository.countByStatus(RideStatus.RIDE_STARTED) +
-                    rideRequestRepository.countByStatus(RideStatus.PAYMENT_PROCESSING);
+            // **FIXED LOGIC: Use atomic counter for immediate capacity check**
+            int currentProcessing = processingRequests.get();
 
-            int availableDrivers = getAvailableDriverCount();
+            log.info("Current processing requests: {}, Max drivers: {} for customer: {}",
+                    currentProcessing, MAX_DRIVERS, request.getCustomerEmail());
 
-            log.info("Active rides: {}, Available drivers: {} for customer: {}",
-                    activeRides, availableDrivers, request.getCustomerEmail());
-
-            if (activeRides < availableDrivers) {
+            if (currentProcessing < MAX_DRIVERS) {
                 // **IMMEDIATE PROCESSING**
-                log.info("✅ IMMEDIATE PROCESSING: Available capacity for {}", request.getCustomerEmail());
+                int slot = processingRequests.incrementAndGet();
+                log.info("✅ IMMEDIATE PROCESSING: Slot {} for {}", slot, request.getCustomerEmail());
+
                 customerDomainService.startSagaForRide(savedRideRequest);
 
                 return RideStatusResponse.builder()
@@ -67,14 +71,21 @@ public class RideMatchingService {
                         .build();
 
             } else {
-                // **QUEUE FOR LATER PROCESSING**
-                log.warn("🚫 NO CAPACITY - ADDING TO QUEUE: {} (Active: {}, Available: {})",
-                        request.getCustomerEmail(), activeRides, availableDrivers);
+                // **QUEUE FOR LATER PROCESSING WITH DETAILED LOGGING**
+                log.warn("🚫 ALL SLOTS TAKEN - ADDING TO QUEUE: {}", request.getCustomerEmail());
 
                 savedRideRequest.setStatus(RideStatus.DRIVER_SEARCHING);
                 rideRequestRepository.save(savedRideRequest);
 
-                customerDomainService.addToExistingQueue(savedRideRequest);
+                // **CRITICAL FIX: Direct queue addition with error handling**
+                try {
+                    log.info("🔄 ATTEMPTING TO ADD TO QUEUE: {}", request.getCustomerEmail());
+                    customerDomainService.addToExistingQueue(savedRideRequest);
+                    log.info("✅ SUCCESSFULLY ADDED TO QUEUE: {}", request.getCustomerEmail());
+                } catch (Exception e) {
+                    log.error("❌ FAILED TO ADD TO QUEUE for {}: {}", request.getCustomerEmail(), e.getMessage(), e);
+                    throw new RuntimeException("Failed to add to queue: " + e.getMessage());
+                }
 
                 return RideStatusResponse.builder()
                         .rideRequestId(savedRideRequest.getId())
@@ -97,15 +108,9 @@ public class RideMatchingService {
         customerDomainService.processQueuedRequests();
     }
 
-    private int getAvailableDriverCount() {
-        try {
-            String driverServiceUrl = "http://localhost:4768/api/driver/available-count";
-            Integer count = restTemplate.getForObject(driverServiceUrl, Integer.class);
-            return count != null ? count : 0;
-        } catch (Exception e) {
-            log.error("Failed to check driver availability", e);
-            return 0;
-        }
+    public static void releaseSlot(String customerEmail) {
+        int remaining = processingRequests.decrementAndGet();
+        log.info("🔓 Released slot for {} - remaining: {}", customerEmail, remaining);
     }
 
     private Customer findOrCreateCustomer(String email) {

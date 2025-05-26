@@ -1,6 +1,7 @@
 package com.uber.api.customer.service.messaging;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uber.api.customer.service.repository.QueuedRequestRepository;
 import com.uber.api.customer.service.repository.RideRequestRepository;
 import com.uber.api.customer.service.repository.CustomerRepository;
 import com.uber.api.shared.constants.CustomerStatus;
@@ -21,6 +22,7 @@ public class DriverResponseListener {
     private final RideRequestRepository rideRequestRepository;
     private final CustomerRepository customerRepository;
     private final ObjectMapper objectMapper;
+    private final QueuedRequestRepository queuedRequestRepository;
 
     @KafkaListener(topics = "driver-responses", groupId = "customer-service-group")
     @Transactional
@@ -48,6 +50,13 @@ public class DriverResponseListener {
                     customerRepository.save(customer);
                 });
 
+                // **CRITICAL FIX: Mark queue entry as completed**
+                queuedRequestRepository.findByRideRequestId(driverResponse.getRideRequestId()).ifPresent(queuedRequest -> {
+                    queuedRequest.setStatus("COMPLETED");
+                    queuedRequestRepository.save(queuedRequest);
+                    log.info("✅ Marked queue entry as COMPLETED for ride: {}", driverResponse.getRideRequestId());
+                });
+
             } else {
                 // Driver rejected or no driver available
                 log.warn("Driver rejected or unavailable for ride request: {}", driverResponse.getRideRequestId());
@@ -61,6 +70,13 @@ public class DriverResponseListener {
                     customer.setCurrentRideRequestId(null);
                     customerRepository.save(customer);
                 });
+
+                // **RESET QUEUE ENTRY FOR RETRY**
+                queuedRequestRepository.findByRideRequestId(driverResponse.getRideRequestId()).ifPresent(queuedRequest -> {
+                    queuedRequest.setStatus("QUEUED");
+                    queuedRequestRepository.save(queuedRequest);
+                    log.info("🔄 Reset queue entry to QUEUED for retry: {}", driverResponse.getRideRequestId());
+                });
             }
 
             log.info("Driver response processed successfully for ride: {}", driverResponse.getRideRequestId());
@@ -69,4 +85,5 @@ public class DriverResponseListener {
             log.error("Error processing driver response: {}", message, e);
         }
     }
+
 }

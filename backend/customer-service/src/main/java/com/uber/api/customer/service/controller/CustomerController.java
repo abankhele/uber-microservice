@@ -139,6 +139,28 @@ public class CustomerController {
             return ResponseEntity.badRequest().body("Error: " + e.getMessage());
         }
     }
+    @GetMapping("/debug/queue-detailed")
+    public ResponseEntity<String> debugQueueDetailed() {
+        try {
+            List<QueuedRequest> allRequests = queuedRequestRepository.findAll();
+            StringBuilder result = new StringBuilder("=== DETAILED QUEUE DEBUG ===\n");
+
+            result.append("Total requests in queue table: ").append(allRequests.size()).append("\n\n");
+
+            for (QueuedRequest request : allRequests) {
+                result.append(String.format("ID: %s\nCustomer: %s\nStatus: %s\nQueued At: %s\nExpires At: %s\n\n",
+                        request.getId(), request.getCustomerEmail(), request.getStatus(),
+                        request.getQueuedAt(), request.getExpiresAt()));
+            }
+
+            List<QueuedRequest> queuedOnly = queuedRequestRepository.findQueuedRequestsOrderedByPriority();
+            result.append("Requests with status 'QUEUED': ").append(queuedOnly.size()).append("\n");
+
+            return ResponseEntity.ok(result.toString());
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body("Error: " + e.getMessage());
+        }
+    }
 
 
 
