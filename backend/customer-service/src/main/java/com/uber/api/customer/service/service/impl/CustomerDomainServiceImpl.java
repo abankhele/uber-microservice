@@ -22,7 +22,6 @@ import com.uber.api.shared.outbox.OutboxStatus;
 import com.uber.api.shared.saga.SagaStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
@@ -46,41 +45,8 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     @Override
     @Transactional
     public RideStatusResponse callTaxi(CallTaxiRequest request) {
-        log.info("=== CREATING RIDE REQUEST FOR: {} ===", request.getCustomerEmail());
-
-        try {
-            // Find or create customer
-            Customer customer = findOrCreateCustomer(request.getCustomerEmail());
-            validateCustomerCanCallTaxi(customer);
-
-            // **ALWAYS CREATE RIDE REQUEST**
-            RideRequest rideRequest = createRideRequest(request);
-            RideRequest savedRideRequest = rideRequestRepository.save(rideRequest);
-
-            // Update customer status
-            customer.setStatus(CustomerStatus.REQUESTING);
-            customer.setCurrentRideRequestId(savedRideRequest.getId());
-            customerRepository.save(customer);
-
-            // **ALWAYS ADD TO QUEUE WITH 10-MINUTE TIMEOUT**
-            addToQueue(savedRideRequest);
-
-            log.info("✅ RIDE REQUEST CREATED AND QUEUED: {} for customer: {}",
-                    savedRideRequest.getId(), request.getCustomerEmail());
-
-            return RideStatusResponse.builder()
-                    .rideRequestId(savedRideRequest.getId())
-                    .status(RideStatus.DRIVER_SEARCHING)
-                    .customerEmail(request.getCustomerEmail())
-                    .estimatedPrice(savedRideRequest.getEstimatedPrice())
-                    .createdAt(savedRideRequest.getCreatedAt())
-                    .statusMessage("Looking for available driver. Request will expire in 10 minutes if no driver is found.")
-                    .build();
-
-        } catch (Exception e) {
-            log.error("❌ ERROR creating ride request for {}: {}", request.getCustomerEmail(), e.getMessage());
-            throw new RuntimeException("Failed to create ride request: " + e.getMessage());
-        }
+        log.info("=== FALLBACK CALL TAXI - SHOULD USE RideMatchingService ===");
+        throw new RuntimeException("Use RideMatchingService.requestRide() instead");
     }
 
     @Override
@@ -168,28 +134,12 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             releaseDriver(activeRide.getDriverEmail(), activeRide.getId(), customerEmail, "COMPLETED");
         }
 
-        // **REMOVED: Don't trigger queue processing immediately - let scheduler handle it**
-        log.info("✅ RIDE COMPLETED for customer: {} - Queue will process in next cycle", customerEmail);
+        // **CRITICAL FIX: Immediately trigger queue processing**
+        log.info("🔄 TRIGGERING IMMEDIATE QUEUE PROCESSING AFTER COMPLETION");
+        processQueuedRequests();
+
+        log.info("✅ RIDE COMPLETED for customer: {}", customerEmail);
     }
-
-    @Transactional
-    public void triggerQueueProcessingAfterDriverRelease() {
-        log.info("🔄 DRIVER RELEASED - TRIGGERING IMMEDIATE QUEUE PROCESSING");
-
-        // Process queue multiple times to handle race conditions
-        for (int i = 0; i < 3; i++) {
-            try {
-                processQueuedRequests();
-                Thread.sleep(1000); // Wait 1 second between attempts
-            } catch (Exception e) {
-                log.error("Error in queue processing attempt {}", i + 1, e);
-            }
-        }
-    }
-
-
-
-
 
     @Override
     @Transactional
@@ -241,15 +191,15 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     public void processQueuedRequests() {
         log.info("=== PROCESSING QUEUE ===");
 
-        // **CRITICAL FIX: Get queued requests FIRST, then check drivers**
+        // **Get queued requests in FIFO order**
         List<QueuedRequest> queuedRequests = queuedRequestRepository.findQueuedRequestsOrderedByPriority();
 
         if (queuedRequests.isEmpty()) {
-            log.info("No queued requests to process");
+            log.debug("No queued requests to process");
             return;
         }
 
-        // **CRITICAL FIX: Check available drivers**
+        // **Check available drivers**
         int availableDrivers = getAvailableDriverCount();
         log.info("Found {} queued requests, {} available drivers", queuedRequests.size(), availableDrivers);
 
@@ -258,7 +208,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             return;
         }
 
-        // **CRITICAL FIX: Process EXACTLY ONE REQUEST AT A TIME with atomic updates**
+        // **Process requests in FIFO order**
         int processedCount = 0;
         for (QueuedRequest queuedRequest : queuedRequests) {
             if (processedCount >= availableDrivers) {
@@ -267,7 +217,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             }
 
             try {
-                // **ATOMIC UPDATE: Try to claim this request for processing**
+                // **Get fresh copy to avoid stale data**
                 QueuedRequest freshRequest = queuedRequestRepository.findById(queuedRequest.getId()).orElse(null);
 
                 if (freshRequest == null || !"QUEUED".equals(freshRequest.getStatus())) {
@@ -286,11 +236,11 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                     continue;
                 }
 
-                // **ATOMIC CLAIM: Mark as processing**
+                // **Mark as processing**
                 freshRequest.setStatus("PROCESSING");
                 queuedRequestRepository.save(freshRequest);
 
-                // **Process the payment for queued request**
+                // **Process the payment for queued request via SAGA**
                 if (processQueuedPayment(freshRequest)) {
                     freshRequest.setStatus("COMPLETED");
                     queuedRequestRepository.save(freshRequest);
@@ -298,7 +248,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                     log.info("✅ Successfully processed queued request: {} (order: {})",
                             freshRequest.getId(), processedCount);
 
-                    // **CRITICAL: Update available driver count after each assignment**
+                    // **Update available driver count after each assignment**
                     availableDrivers = getAvailableDriverCount();
                     log.info("Remaining available drivers: {}", availableDrivers);
 
@@ -327,6 +277,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         log.info("=== QUEUE PROCESSING COMPLETE: {} requests processed ===", processedCount);
     }
 
+    // **HELPER METHODS**
 
     private void addToQueue(RideRequest rideRequest) {
         try {
@@ -348,7 +299,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
 
             String payload = objectMapper.writeValueAsString(paymentEvent);
 
-            // **CRITICAL FIX: Use queuedAt for ordering**
+            // **Use queuedAt for FIFO ordering**
             QueuedRequest queuedRequest = QueuedRequest.builder()
                     .rideRequestId(rideRequest.getId())
                     .sagaId(sagaId)
@@ -360,7 +311,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                     .build();
 
             queuedRequestRepository.save(queuedRequest);
-            log.info("🔄 ADDED TO QUEUE: {} for customer: {} at time: {} (FIFO position determined by timestamp)",
+            log.info("🔄 ADDED TO QUEUE: {} for customer: {} at time: {}",
                     rideRequest.getId(), rideRequest.getCustomerEmail(), now);
 
         } catch (Exception e) {
@@ -374,8 +325,9 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             PaymentRequestEvent paymentEvent = objectMapper.readValue(
                     queuedRequest.getDriverRequestPayload(), PaymentRequestEvent.class);
 
+            // **SAGA INTEGRATION: Save to outbox for reliable processing**
             saveToOutbox(paymentEvent, queuedRequest.getSagaId(), "payment-requests");
-            log.info("Payment request sent for queued ride: {}", queuedRequest.getRideRequestId());
+            log.info("Payment request sent via SAGA for queued ride: {}", queuedRequest.getRideRequestId());
             return true;
 
         } catch (Exception e) {
@@ -418,8 +370,9 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                 .status(status)
                 .build();
 
+        // **SAGA INTEGRATION: Use outbox for reliable messaging**
         saveToOutbox(driverEvent, UUID.randomUUID(), "driver-completion");
-        log.info("🔄 SENT DRIVER RELEASE EVENT for driver: {} status: {}", driverEmail, status);
+        log.info("🔄 SENT DRIVER RELEASE EVENT via SAGA for driver: {} status: {}", driverEmail, status);
     }
 
     private void resetCustomerToAvailable(String customerEmail) {
@@ -544,6 +497,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             throw new RuntimeException("Failed to save event to outbox", e);
         }
     }
+
     public void debugQueueOrder() {
         List<QueuedRequest> queuedRequests = queuedRequestRepository.findQueuedRequestsInFIFOOrder();
         log.info("=== CURRENT QUEUE ORDER ===");
@@ -567,7 +521,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
 
     public void startSagaForRide(RideRequest rideRequest) {
         try {
-            // Create payment request event to start SAGA
+            // **SAGA INTEGRATION: Create payment request event to start SAGA**
             PaymentRequestEvent paymentRequestEvent = PaymentRequestEvent.builder()
                     .sagaId(UUID.randomUUID())
                     .rideRequestId(rideRequest.getId())
@@ -584,6 +538,4 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             throw new RuntimeException("Failed to start SAGA", e);
         }
     }
-
-
 }
