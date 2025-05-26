@@ -4,24 +4,15 @@ import com.uber.api.customer.service.dto.CallTaxiRequest;
 import com.uber.api.customer.service.dto.RideStatusResponse;
 import com.uber.api.customer.service.entity.Customer;
 import com.uber.api.customer.service.repository.CustomerRepository;
-import com.uber.api.customer.service.repository.QueuedRequestRepository;
 import com.uber.api.customer.service.repository.RideRequestRepository;
 import com.uber.api.shared.constants.CustomerStatus;
 import com.uber.api.shared.constants.RideStatus;
-import com.uber.api.shared.entities.QueuedRequest;
 import com.uber.api.shared.entities.RideRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
-
-import jakarta.annotation.PostConstruct;
-import java.time.ZonedDateTime;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -31,19 +22,7 @@ public class RideMatchingService {
     private final CustomerDomainService customerDomainService;
     private final CustomerRepository customerRepository;
     private final RideRequestRepository rideRequestRepository;
-    private final QueuedRequestRepository queuedRequestRepository;
     private final RestTemplate restTemplate;
-
-    // **CENTRALIZED IN-MEMORY QUEUE for immediate processing**
-    private final ConcurrentLinkedQueue<RideRequest> immediateQueue = new ConcurrentLinkedQueue<>();
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
-
-    @PostConstruct
-    public void startMatchingService() {
-        // Start immediate queue processor - runs every 2 seconds
-        scheduler.scheduleWithFixedDelay(this::processImmediateQueue, 0, 2, TimeUnit.SECONDS);
-        log.info("✅ RideMatchingService started - Immediate queue processor running");
-    }
 
     @Transactional
     public RideStatusResponse requestRide(CallTaxiRequest request) {
@@ -54,7 +33,7 @@ public class RideMatchingService {
             Customer customer = findOrCreateCustomer(request.getCustomerEmail());
             validateCustomerCanCallTaxi(customer);
 
-            // Create ride request using existing logic
+            // Create ride request
             RideRequest rideRequest = customerDomainService.createRideRequestFromRequest(request);
             RideRequest savedRideRequest = rideRequestRepository.save(rideRequest);
 
@@ -63,16 +42,14 @@ public class RideMatchingService {
             customer.setCurrentRideRequestId(savedRideRequest.getId());
             customerRepository.save(customer);
 
-            // **INTELLIGENT ROUTING: Check driver availability**
+            // **CRITICAL FIX: Check driver availability FIRST**
             int availableDrivers = getAvailableDriverCount();
             log.info("Available drivers: {} for customer: {}", availableDrivers, request.getCustomerEmail());
 
             if (availableDrivers > 0) {
-                // **IMMEDIATE PROCESSING via existing SAGA**
+                // **IMMEDIATE PROCESSING - Start SAGA directly**
                 log.info("✅ IMMEDIATE PROCESSING: {} drivers available", availableDrivers);
-
-                // Add to immediate queue for fast processing
-                immediateQueue.offer(savedRideRequest);
+                customerDomainService.startSagaForRide(savedRideRequest);
 
                 return RideStatusResponse.builder()
                         .rideRequestId(savedRideRequest.getId())
@@ -84,13 +61,13 @@ public class RideMatchingService {
                         .build();
 
             } else {
-                // **QUEUE FOR LATER PROCESSING via existing queue system**
-                log.warn("🚫 NO DRIVERS AVAILABLE - USING EXISTING QUEUE: {}", request.getCustomerEmail());
+                // **QUEUE FOR LATER PROCESSING**
+                log.warn("🚫 NO DRIVERS AVAILABLE - ADDING TO QUEUE: {}", request.getCustomerEmail());
 
                 savedRideRequest.setStatus(RideStatus.DRIVER_SEARCHING);
                 rideRequestRepository.save(savedRideRequest);
 
-                // Use existing queue system
+                // Use existing persistent queue system
                 customerDomainService.addToExistingQueue(savedRideRequest);
 
                 return RideStatusResponse.builder()
@@ -110,73 +87,11 @@ public class RideMatchingService {
     }
 
     /**
-     * **IMMEDIATE QUEUE PROCESSOR**
-     * Processes requests when drivers are available immediately
-     */
-    public void processImmediateQueue() {
-        if (immediateQueue.isEmpty()) {
-            return;
-        }
-
-        int availableDrivers = getAvailableDriverCount();
-        if (availableDrivers == 0) {
-            // Move requests to persistent queue if no drivers available
-            moveToExistingQueue();
-            return;
-        }
-
-        log.info("=== PROCESSING IMMEDIATE QUEUE: {} requests, {} drivers available ===",
-                immediateQueue.size(), availableDrivers);
-
-        int processed = 0;
-        while (!immediateQueue.isEmpty() && processed < availableDrivers) {
-            RideRequest request = immediateQueue.poll();
-
-            if (request != null) {
-                try {
-                    // Process through existing SAGA
-                    customerDomainService.startSagaForRide(request);
-                    processed++;
-                    log.info("✅ Processed immediate request for: {}", request.getCustomerEmail());
-                } catch (Exception e) {
-                    log.error("Error processing immediate request", e);
-                    // Add back to queue for retry
-                    immediateQueue.offer(request);
-                    break;
-                }
-            }
-        }
-
-        if (processed > 0) {
-            log.info("✅ Processed {} immediate requests", processed);
-        }
-    }
-
-    /**
-     * **TRIGGER IMMEDIATE PROCESSING when driver becomes available**
+     * **TRIGGER QUEUE PROCESSING when driver becomes available**
      */
     public void onDriverAvailable() {
-        log.info("🔄 Driver became available - triggering immediate queue processing");
-        processImmediateQueue();
-
-        // Also trigger existing queue processing
+        log.info("🔄 Driver became available - triggering persistent queue processing");
         customerDomainService.processQueuedRequests();
-    }
-
-    private void moveToExistingQueue() {
-        while (!immediateQueue.isEmpty()) {
-            RideRequest request = immediateQueue.poll();
-            if (request != null) {
-                try {
-                    request.setStatus(RideStatus.DRIVER_SEARCHING);
-                    rideRequestRepository.save(request);
-                    customerDomainService.addToExistingQueue(request);
-                    log.info("Moved request to persistent queue: {}", request.getCustomerEmail());
-                } catch (Exception e) {
-                    log.error("Error moving request to queue", e);
-                }
-            }
-        }
     }
 
     private int getAvailableDriverCount() {

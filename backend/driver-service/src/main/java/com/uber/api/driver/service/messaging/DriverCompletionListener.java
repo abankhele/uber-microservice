@@ -37,7 +37,7 @@ public class DriverCompletionListener {
                         driver.setCurrentRideRequestId(null);
                         driverRepository.save(driver);
 
-                        // **TRIGGER QUEUE PROCESSING via Kafka event**
+                        // **TRIGGER QUEUE PROCESSING**
                         publishDriverAvailableEvent(driver.getEmail());
 
                         log.info("✅ DRIVER {} IS NOW AVAILABLE FOR NEW RIDES", event.getDriverEmail());
@@ -58,5 +58,6 @@ public class DriverCompletionListener {
             log.error("Failed to publish driver available event", e);
         }
     }
+
 
 }

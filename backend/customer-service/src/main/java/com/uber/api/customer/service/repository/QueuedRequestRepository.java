@@ -29,4 +29,6 @@ public interface QueuedRequestRepository extends JpaRepository<QueuedRequest, UU
     // **ADDITIONAL FIX: Add method to get requests in true FIFO order**
     @Query("SELECT q FROM QueuedRequest q WHERE q.status = 'QUEUED' ORDER BY q.queuedAt ASC")
     List<QueuedRequest> findQueuedRequestsInFIFOOrder();
+
+
 }

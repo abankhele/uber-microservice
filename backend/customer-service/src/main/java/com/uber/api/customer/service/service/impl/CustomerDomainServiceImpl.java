@@ -172,6 +172,24 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         log.info("✅ RIDE COMPLETED for customer: {} - Queue will process in next cycle", customerEmail);
     }
 
+    @Transactional
+    public void triggerQueueProcessingAfterDriverRelease() {
+        log.info("🔄 DRIVER RELEASED - TRIGGERING IMMEDIATE QUEUE PROCESSING");
+
+        // Process queue multiple times to handle race conditions
+        for (int i = 0; i < 3; i++) {
+            try {
+                processQueuedRequests();
+                Thread.sleep(1000); // Wait 1 second between attempts
+            } catch (Exception e) {
+                log.error("Error in queue processing attempt {}", i + 1, e);
+            }
+        }
+    }
+
+
+
+
 
     @Override
     @Transactional
