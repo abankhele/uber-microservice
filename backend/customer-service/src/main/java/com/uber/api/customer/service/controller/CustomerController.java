@@ -98,6 +98,17 @@ public class CustomerController {
         }
     }
 
+    @GetMapping("/debug/queue")
+    public ResponseEntity<String> debugQueue() {
+        try {
+            customerDomainService.debugQueueOrder();
+            return ResponseEntity.ok("Queue order logged - check console");
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body("Error: " + e.getMessage());
+        }
+    }
+
+
     @GetMapping("/health")
     public ResponseEntity<String> health() {
         return ResponseEntity.ok("Customer Service is healthy");

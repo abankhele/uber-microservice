@@ -11,4 +11,6 @@ public interface CustomerDomainService {
     void cancelRide(String customerEmail);
     void processExpiredRequests();
     void processQueuedRequests();
+
+    void debugQueueOrder();
 }

@@ -13,7 +13,7 @@ import java.util.UUID;
 @Repository
 public interface QueuedRequestRepository extends JpaRepository<QueuedRequest, UUID> {
 
-    // **CRITICAL FIX: Order by queuedAt for true FIFO**
+    // **CRITICAL FIX: Correct FIFO ordering by queuedAt timestamp**
     @Query("SELECT q FROM QueuedRequest q WHERE q.status = 'QUEUED' ORDER BY q.queuedAt ASC")
     List<QueuedRequest> findQueuedRequestsOrderedByPriority();
 
@@ -25,4 +25,8 @@ public interface QueuedRequestRepository extends JpaRepository<QueuedRequest, UU
 
     @Query("SELECT COUNT(q) FROM QueuedRequest q WHERE q.status = 'QUEUED'")
     long countQueuedRequests();
+
+    // **ADDITIONAL FIX: Add method to get requests in true FIFO order**
+    @Query("SELECT q FROM QueuedRequest q WHERE q.status = 'QUEUED' ORDER BY q.queuedAt ASC")
+    List<QueuedRequest> findQueuedRequestsInFIFOOrder();
 }

@@ -14,7 +14,7 @@ public class QueueAndTimeoutScheduler {
     private final CustomerDomainService customerDomainService;
 
     // **CRITICAL FIX: More frequent queue processing**
-    @Scheduled(fixedDelay = 2000) // Every 2 seconds
+    @Scheduled(fixedDelay = 5000)
     public void processQueuedRequests() {
         try {
             customerDomainService.processQueuedRequests();

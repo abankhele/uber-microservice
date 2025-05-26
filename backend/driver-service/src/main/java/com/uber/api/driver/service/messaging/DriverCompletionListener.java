@@ -21,27 +21,27 @@ public class DriverCompletionListener {
     @KafkaListener(topics = "driver-completion", groupId = "driver-service-group")
     @Transactional
     public void handleRideCompletion(String message) {
-        log.info("Received driver completion event: {}", message);
+        log.info(" RECEIVED DRIVER COMPLETION EVENT: {}", message);
 
         try {
             DriverCompletionEvent event = objectMapper.readValue(message, DriverCompletionEvent.class);
 
             driverRepository.findByEmail(event.getDriverEmail()).ifPresentOrElse(
                     driver -> {
-                        log.info("Resetting driver {} status from {} to AVAILABLE",
+                        log.info(" RESETTING DRIVER {} FROM {} TO AVAILABLE",
                                 event.getDriverEmail(), driver.getStatus());
 
                         driver.setStatus(DriverStatus.AVAILABLE);
                         driver.setCurrentRideRequestId(null);
                         driverRepository.save(driver);
 
-                        log.info("Driver {} is now AVAILABLE for new rides", event.getDriverEmail());
+                        log.info(" DRIVER {} IS NOW AVAILABLE FOR NEW RIDES", event.getDriverEmail());
                     },
-                    () -> log.warn("Driver not found: {}", event.getDriverEmail())
+                    () -> log.warn(" DRIVER NOT FOUND: {}", event.getDriverEmail())
             );
 
         } catch (Exception e) {
-            log.error("Error processing driver completion event: {}", message, e);
+            log.error(" ERROR PROCESSING DRIVER COMPLETION: {}", message, e);
         }
     }
 }

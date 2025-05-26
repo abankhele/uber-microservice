@@ -30,8 +30,6 @@ public class QueuedRequest {
 
     private ZonedDateTime queuedAt;
     private ZonedDateTime expiresAt;
-
-    // **CRITICAL FIX: Remove priority, use queuedAt for ordering**
     private String status; // QUEUED, PROCESSING, COMPLETED, EXPIRED, CANCELLED
 
     @Version
