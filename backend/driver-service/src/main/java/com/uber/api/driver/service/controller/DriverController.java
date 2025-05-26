@@ -61,10 +61,11 @@ public class DriverController {
     public ResponseEntity<Integer> getAvailableDriverCount() {
         try {
             int count = driverDomainService.getAvailableDriverCount();
+            log.info("Available driver count requested: {}", count);
             return ResponseEntity.ok(count);
         } catch (Exception e) {
             log.error("Error getting available driver count", e);
-            return ResponseEntity.ok(0); // Return 0 if error
+            return ResponseEntity.ok(0);
         }
     }
 
