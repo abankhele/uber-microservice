@@ -22,6 +22,7 @@ import com.uber.api.shared.outbox.OutboxStatus;
 import com.uber.api.shared.saga.SagaStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
@@ -224,8 +225,8 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     public void processQueuedRequests() {
         log.info("=== PROCESSING QUEUE ===");
 
-        // **CRITICAL FIX: Use correct FIFO query**
-        List<QueuedRequest> queuedRequests = queuedRequestRepository.findQueuedRequestsInFIFOOrder();
+        // **CRITICAL FIX: Get queued requests FIRST, then check drivers**
+        List<QueuedRequest> queuedRequests = queuedRequestRepository.findQueuedRequestsOrderedByPriority();
 
         if (queuedRequests.isEmpty()) {
             log.info("No queued requests to process");
@@ -278,8 +279,8 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                     freshRequest.setStatus("COMPLETED");
                     queuedRequestRepository.save(freshRequest);
                     processedCount++;
-                    log.info("✅ Successfully processed queued request: {} (order: {}) for customer: {}",
-                            freshRequest.getId(), processedCount, freshRequest.getCustomerEmail());
+                    log.info("✅ Successfully processed queued request: {} (order: {})",
+                            freshRequest.getId(), processedCount);
 
                     // **CRITICAL: Update available driver count after each assignment**
                     availableDrivers = getAvailableDriverCount();
@@ -309,6 +310,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
 
         log.info("=== QUEUE PROCESSING COMPLETE: {} requests processed ===", processedCount);
     }
+
 
     private void addToQueue(RideRequest rideRequest) {
         try {

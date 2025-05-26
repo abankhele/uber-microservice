@@ -13,8 +13,8 @@ public class QueueAndTimeoutScheduler {
 
     private final CustomerDomainService customerDomainService;
 
-    // **CRITICAL FIX: More frequent queue processing**
-    @Scheduled(fixedDelay = 5000)
+    // **CRITICAL FIX: Reduced frequency to prevent race conditions**
+    @Scheduled(fixedDelay = 10000) // Every 10 seconds instead of 2
     public void processQueuedRequests() {
         try {
             customerDomainService.processQueuedRequests();
