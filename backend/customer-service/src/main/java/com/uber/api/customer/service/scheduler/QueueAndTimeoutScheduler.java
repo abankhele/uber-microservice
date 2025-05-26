@@ -13,8 +13,8 @@ public class QueueAndTimeoutScheduler {
 
     private final CustomerDomainService customerDomainService;
 
-    // **CRITICAL FIX: More aggressive queue processing**
-    @Scheduled(fixedDelay = 1000) // Every 1 second
+    // Run the queue processor every second
+    @Scheduled(fixedDelay = 1000)
     public void processQueuedRequests() {
         try {
             log.debug("🔄 Running aggressive queue processor...");
@@ -24,7 +24,8 @@ public class QueueAndTimeoutScheduler {
         }
     }
 
-    @Scheduled(fixedDelay = 30000) // Every 30 seconds
+    // Clean up expired requests every 30 seconds
+    @Scheduled(fixedDelay = 30000)
     public void processExpiredRequests() {
         try {
             customerDomainService.processExpiredRequests();

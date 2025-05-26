@@ -14,4 +14,6 @@ public interface RideRequestRepository extends JpaRepository<RideRequest, UUID> 
     Optional<RideRequest> findByIdAndCustomerEmail(UUID id, String customerEmail);
     List<RideRequest> findByCustomerEmailOrderByCreatedAtDesc(String customerEmail);
     Optional<RideRequest> findByCustomerEmailAndStatus(String customerEmail, RideStatus status);
+    long countByStatus(RideStatus status);
+
 }

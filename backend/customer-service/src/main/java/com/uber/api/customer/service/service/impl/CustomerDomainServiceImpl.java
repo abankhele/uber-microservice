@@ -11,6 +11,7 @@ import com.uber.api.customer.service.repository.CustomerRepository;
 import com.uber.api.customer.service.repository.QueuedRequestRepository;
 import com.uber.api.customer.service.repository.RideRequestRepository;
 import com.uber.api.customer.service.service.CustomerDomainService;
+import com.uber.api.customer.service.service.RideMatchingService;
 import com.uber.api.shared.constants.CustomerStatus;
 import com.uber.api.shared.constants.RideStatus;
 import com.uber.api.shared.entities.Location;
@@ -136,28 +137,10 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             releaseDriver(activeRide.getDriverEmail(), activeRide.getId(), customerEmail, "COMPLETED");
         }
 
-        // **CRITICAL FIX: Multiple queue processing attempts with delays**
-        log.info("🔄 TRIGGERING IMMEDIATE QUEUE PROCESSING AFTER COMPLETION");
+        RideMatchingService.releaseSlot(customerEmail);
 
-        // Process queue immediately
+        // **CRITICAL: Trigger queue processing**
         processQueuedRequests();
-
-        // Wait and process again to handle timing issues
-        try {
-            Thread.sleep(2000);
-            log.info("🔄 SECOND QUEUE PROCESSING ATTEMPT");
-            processQueuedRequests();
-
-            Thread.sleep(3000);
-            log.info("🔄 THIRD QUEUE PROCESSING ATTEMPT");
-            processQueuedRequests();
-
-            Thread.sleep(5000);
-            log.info("🔄 FOURTH QUEUE PROCESSING ATTEMPT");
-            processQueuedRequests();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
 
         log.info("✅ RIDE COMPLETED for customer: {}", customerEmail);
     }
@@ -213,7 +196,6 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     public void processQueuedRequests() {
         log.info("=== PROCESSING QUEUE ===");
 
-        // **Get queued requests in FIFO order**
         List<QueuedRequest> queuedRequests = queuedRequestRepository.findQueuedRequestsOrderedByPriority();
 
         if (queuedRequests.isEmpty()) {
@@ -221,7 +203,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             return;
         }
 
-        // **Check available drivers**
+        // **CRITICAL FIX: Get driver count ONCE and manage locally**
         int availableDrivers = getAvailableDriverCount();
         log.info("Found {} queued requests, {} available drivers", queuedRequests.size(), availableDrivers);
 
@@ -230,13 +212,14 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             return;
         }
 
-        // **Process requests in FIFO order**
+        // **CRITICAL FIX: Process EXACTLY the number of available drivers**
         int processedCount = 0;
-        for (QueuedRequest queuedRequest : queuedRequests) {
-            if (processedCount >= availableDrivers) {
-                log.info("Processed {} requests, no more drivers available", processedCount);
-                break;
-            }
+        int maxToProcess = Math.min(queuedRequests.size(), availableDrivers);
+
+        log.info("Will process {} requests (limited by available drivers)", maxToProcess);
+
+        for (int i = 0; i < maxToProcess; i++) {
+            QueuedRequest queuedRequest = queuedRequests.get(i);
 
             try {
                 // **Get fresh copy to avoid stale data**
@@ -248,8 +231,8 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                     continue;
                 }
 
-                log.info("🔄 Processing queued request: {} for customer: {} (queued at: {})",
-                        freshRequest.getId(), freshRequest.getCustomerEmail(), freshRequest.getQueuedAt());
+                log.info("🔄 Processing queued request: {} for customer: {} (position: {})",
+                        freshRequest.getId(), freshRequest.getCustomerEmail(), i + 1);
 
                 // Check if expired
                 if (freshRequest.getExpiresAt().isBefore(ZonedDateTime.now())) {
@@ -269,11 +252,6 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
                     processedCount++;
                     log.info("✅ Successfully processed queued request: {} (order: {})",
                             freshRequest.getId(), processedCount);
-
-                    // **Update available driver count after each assignment**
-                    availableDrivers = getAvailableDriverCount();
-                    log.info("Remaining available drivers: {}", availableDrivers);
-
                 } else {
                     // Reset to queued if processing failed
                     freshRequest.setStatus("QUEUED");
