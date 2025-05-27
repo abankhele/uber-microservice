@@ -77,6 +77,7 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
             PaymentResponseEvent response = PaymentResponseEvent.builder()
                     .sagaId(paymentRequest.getSagaId())
                     .rideRequestId(paymentRequest.getRideRequestId())
+                    .success(true)
                     .customerEmail(paymentRequest.getCustomerEmail())
                     .amount(paymentRequest.getAmount())
                     .status(PaymentStatus.COMPLETED)
@@ -132,6 +133,7 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
             PaymentResponseEvent response = PaymentResponseEvent.builder()
                     .sagaId(refundRequest.getSagaId())
                     .rideRequestId(refundRequest.getRideRequestId())
+                    .success(true)
                     .customerEmail(refundRequest.getCustomerEmail())
                     .amount(refundRequest.getAmount())
                     .status(PaymentStatus.COMPLETED)
@@ -239,6 +241,7 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
                 .rideRequestId(request.getRideRequestId())
                 .customerEmail(request.getCustomerEmail())
                 .amount(request.getAmount())
+                .success(true)
                 .status(PaymentStatus.FAILED)
                 .failureReason(failureReason)
                 .build();
@@ -248,7 +251,8 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
         return response;
     }
 
-    private void saveToOutbox(Object event, UUID sagaId, String eventType) {
+    @Override
+    public void saveToOutbox(Object event, UUID sagaId, String eventType) {
         try {
             String payload = objectMapper.writeValueAsString(event);
 
@@ -257,15 +261,18 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
                     .eventType(eventType)
                     .payload(payload)
                     .status(OutboxStatus.PENDING)
-                    .sagaStatus(SagaStatus.PROCESSING)
+                    .sagaStatus(SagaStatus.STARTED)
                     .createdAt(ZonedDateTime.now())
                     .build();
 
             paymentOutboxRepository.save(outboxEvent);
+            log.info("✅ Saved {} event to outbox for saga: {}", eventType, sagaId);
 
         } catch (Exception e) {
             log.error("Failed to save event to outbox", e);
             throw new RuntimeException("Failed to save event to outbox", e);
         }
     }
+
+
 }

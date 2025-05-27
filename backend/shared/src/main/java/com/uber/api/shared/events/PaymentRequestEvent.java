@@ -1,5 +1,6 @@
 package com.uber.api.shared.events;
 
+import com.uber.api.shared.entities.Location;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -18,4 +19,7 @@ public class PaymentRequestEvent {
     private String customerEmail;
     private BigDecimal amount;
     private String description;
+
+    private Location pickupLocation;
+    private Location destinationLocation;
 }

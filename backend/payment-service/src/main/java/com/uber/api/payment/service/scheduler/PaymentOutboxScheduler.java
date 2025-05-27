@@ -24,32 +24,39 @@ public class PaymentOutboxScheduler {
     @Scheduled(fixedDelay = 5000) // Every 5 seconds
     @Transactional
     public void processOutboxEvents() {
-        List<PaymentOutbox> pendingEvents = paymentOutboxRepository
-                .findByStatusOrderByCreatedAt(OutboxStatus.PENDING);
+        List<PaymentOutbox> pendingEvents = paymentOutboxRepository.findByStatusOrderByCreatedAt(OutboxStatus.PENDING);
 
-        if (!pendingEvents.isEmpty()) {
-            log.info("Processing {} payment outbox events", pendingEvents.size());
+        if (pendingEvents.isEmpty()) {
+            return;
         }
+
+        log.info("Processing {} payment outbox events", pendingEvents.size());
 
         for (PaymentOutbox event : pendingEvents) {
             try {
-                // Send to Kafka
-                kafkaTemplate.send(event.getEventType(), event.getSagaId().toString(), event.getPayload());
+                String topic = getTopicForEventType(event.getEventType());
+                kafkaTemplate.send(topic, event.getPayload());
 
-                // Update status
                 event.setStatus(OutboxStatus.SENT);
                 event.setProcessedAt(ZonedDateTime.now());
                 paymentOutboxRepository.save(event);
 
-                log.info("Successfully sent payment event {} to topic {}", event.getId(), event.getEventType());
+                log.info("Successfully sent payment event {} to topic {}", event.getId(), topic);
 
             } catch (Exception e) {
-                log.error("Failed to send payment event {} to topic {}", event.getId(), event.getEventType(), e);
-
+                log.error("Failed to send payment event {}", event.getId(), e);
                 event.setStatus(OutboxStatus.FAILED);
-                event.setProcessedAt(ZonedDateTime.now());
                 paymentOutboxRepository.save(event);
             }
         }
     }
+
+    private String getTopicForEventType(String eventType) {
+        return switch (eventType) {
+            case "payment-responses" -> "payment-responses";
+            case "driver-requests" -> "driver-requests";
+            default -> throw new IllegalArgumentException("Unknown event type: " + eventType);
+        };
+    }
+
 }

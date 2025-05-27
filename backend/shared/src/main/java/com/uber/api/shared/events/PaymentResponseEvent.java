@@ -17,6 +17,7 @@ public class PaymentResponseEvent {
     private UUID sagaId;
     private UUID rideRequestId;
     private String customerEmail;
+    private boolean success;
     private BigDecimal amount;
     private PaymentStatus status;
     private String failureReason;
