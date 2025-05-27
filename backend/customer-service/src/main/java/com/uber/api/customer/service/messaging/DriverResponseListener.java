@@ -27,10 +27,12 @@ public class DriverResponseListener {
     @KafkaListener(topics = "driver-responses", groupId = "customer-service-group")
     @Transactional
     public void handleDriverResponse(String message) {
-        log.info("Received driver response: {}", message);
+        log.info("🔄 RECEIVED DRIVER RESPONSE: {}", message);
 
         try {
             DriverResponseEvent driverResponse = objectMapper.readValue(message, DriverResponseEvent.class);
+            log.info("📋 Parsed driver response: accepted={}, driverEmail={}, rideId={}",
+                    driverResponse.isAccepted(), driverResponse.getDriverEmail(), driverResponse.getRideRequestId());
 
             // Find the ride request
             RideRequest rideRequest = rideRequestRepository.findById(driverResponse.getRideRequestId())
@@ -38,16 +40,18 @@ public class DriverResponseListener {
 
             if (driverResponse.isAccepted()) {
                 // Driver accepted the ride
-                log.info("Driver {} accepted ride request: {}", driverResponse.getDriverEmail(), driverResponse.getRideRequestId());
+                log.info("✅ Driver {} accepted ride request: {}", driverResponse.getDriverEmail(), driverResponse.getRideRequestId());
 
                 rideRequest.setStatus(RideStatus.DRIVER_ASSIGNED);
                 rideRequest.setDriverEmail(driverResponse.getDriverEmail());
                 rideRequestRepository.save(rideRequest);
+                log.info("💾 Updated ride request status to DRIVER_ASSIGNED for: {}", driverResponse.getRideRequestId());
 
                 // Update customer status
                 customerRepository.findByEmail(rideRequest.getCustomerEmail()).ifPresent(customer -> {
                     customer.setStatus(CustomerStatus.ON_RIDE);
                     customerRepository.save(customer);
+                    log.info("👤 Updated customer {} status to ON_RIDE", customer.getEmail());
                 });
 
                 // **CRITICAL FIX: Mark queue entry as completed**
@@ -59,7 +63,7 @@ public class DriverResponseListener {
 
             } else {
                 // Driver rejected or no driver available
-                log.warn("Driver rejected or unavailable for ride request: {}", driverResponse.getRideRequestId());
+                log.warn("❌ Driver rejected or unavailable for ride request: {}", driverResponse.getRideRequestId());
 
                 rideRequest.setStatus(RideStatus.DRIVER_UNAVAILABLE);
                 rideRequestRepository.save(rideRequest);
@@ -79,11 +83,10 @@ public class DriverResponseListener {
                 });
             }
 
-            log.info("Driver response processed successfully for ride: {}", driverResponse.getRideRequestId());
+            log.info("✅ Driver response processed successfully for ride: {}", driverResponse.getRideRequestId());
 
         } catch (Exception e) {
-            log.error("Error processing driver response: {}", message, e);
+            log.error("❌ Error processing driver response: {}", message, e);
         }
     }
-
 }

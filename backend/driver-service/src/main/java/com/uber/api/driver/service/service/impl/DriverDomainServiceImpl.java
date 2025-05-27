@@ -268,4 +268,100 @@ public class DriverDomainServiceImpl implements DriverDomainService {
     public int getBusyDriverCount() {
         return (int) driverRepository.countByStatus(DriverStatus.BUSY);
     }
+    private void sendDriverUnavailableResponse(DriverRequestEvent driverRequest) {
+        try {
+            DriverResponseEvent response = DriverResponseEvent.builder()
+                    .sagaId(driverRequest.getSagaId())
+                    .rideRequestId(driverRequest.getRideRequestId())
+                    .driverEmail(null)
+                    .accepted(false)
+                    .build();
+
+            saveToOutbox(response, driverRequest.getSagaId(), "driver-responses");
+            log.info("📢 Published driver unavailable response for ride: {}", driverRequest.getRideRequestId());
+        } catch (Exception e) {
+            log.error("Error sending driver unavailable response: {}", e.getMessage());
+        }
+    }
+    @Override
+    @Transactional
+    public void processDriverAssignment(DriverRequestEvent driverRequest) {
+        log.info("Processing driver assignment for ride: {} (Saga: {})",
+                driverRequest.getRideRequestId(), driverRequest.getSagaId());
+
+        try {
+            // Check available drivers
+            long availableCount = driverRepository.countByStatus(DriverStatus.AVAILABLE);
+            log.info("Available drivers count: {}", availableCount);
+
+            if (availableCount == 0) {
+                log.warn("No available drivers for ride: {}", driverRequest.getRideRequestId());
+                sendDriverUnavailableResponse(driverRequest);
+                return;
+            }
+
+            // **SIMPLIFIED: Just find any available driver (remove city logic)**
+            List<Driver> availableDrivers = null;
+
+            try {
+                availableDrivers = driverRepository.findByStatus(DriverStatus.AVAILABLE);
+                log.info("Found {} available drivers", availableDrivers.size());
+            } catch (Exception e) {
+                log.error("Error finding available drivers: {}", e.getMessage());
+                sendDriverUnavailableResponse(driverRequest);
+                return;
+            }
+
+            if (availableDrivers.isEmpty()) {
+                log.warn("No available drivers found for ride: {}", driverRequest.getRideRequestId());
+                sendDriverUnavailableResponse(driverRequest);
+                return;
+            }
+
+            // **ASSIGN FIRST AVAILABLE DRIVER**
+            Driver assignedDriver = availableDrivers.get(0);
+            log.info("Assigning driver: {} to ride: {}", assignedDriver.getEmail(), driverRequest.getRideRequestId());
+
+            assignedDriver.setStatus(DriverStatus.BUSY);
+            assignedDriver.setCurrentRideRequestId(driverRequest.getRideRequestId());
+
+            try {
+                driverRepository.save(assignedDriver);
+                log.info("✅ DRIVER {} ASSIGNED to ride {}", assignedDriver.getEmail(), driverRequest.getRideRequestId());
+            } catch (Exception e) {
+                log.error("Error saving driver assignment: {}", e.getMessage());
+                sendDriverUnavailableResponse(driverRequest);
+                return;
+            }
+
+            // **SEND SUCCESS RESPONSE**
+            DriverResponseEvent response = DriverResponseEvent.builder()
+                    .sagaId(driverRequest.getSagaId())
+                    .rideRequestId(driverRequest.getRideRequestId())
+                    .driverEmail(assignedDriver.getEmail())
+                    .accepted(true)
+                    .build();
+
+            try {
+                saveToOutbox(response, driverRequest.getSagaId(), "driver-responses");
+                log.info("📢 Published driver response for ride: {}", driverRequest.getRideRequestId());
+            } catch (Exception e) {
+                log.error("Error saving driver response to outbox: {}", e.getMessage());
+                // Rollback driver assignment
+                assignedDriver.setStatus(DriverStatus.AVAILABLE);
+                assignedDriver.setCurrentRideRequestId(null);
+                driverRepository.save(assignedDriver);
+                sendDriverUnavailableResponse(driverRequest);
+                return;
+            }
+
+            log.info("✅ Successfully completed driver assignment for ride: {}", driverRequest.getRideRequestId());
+
+        } catch (Exception e) {
+            log.error("❌ Error processing driver assignment for ride: {}", driverRequest.getRideRequestId(), e);
+            sendDriverUnavailableResponse(driverRequest);
+        }
+    }
+
+
 }

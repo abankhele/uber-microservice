@@ -460,13 +460,15 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
 
     public void startSagaForRide(RideRequest rideRequest) {
         try {
-            // **SAGA INTEGRATION: Create payment request event to start SAGA**
+            // **INCLUDE LOCATION DATA in payment request**
             PaymentRequestEvent paymentRequestEvent = PaymentRequestEvent.builder()
                     .sagaId(UUID.randomUUID())
                     .rideRequestId(rideRequest.getId())
                     .customerEmail(rideRequest.getCustomerEmail())
                     .amount(rideRequest.getEstimatedPrice())
                     .description("Taxi ride payment")
+                    .pickupLocation(rideRequest.getPickupLocation())
+                    .destinationLocation(rideRequest.getDestinationLocation())
                     .build();
 
             saveToOutbox(paymentRequestEvent, paymentRequestEvent.getSagaId(), "payment-requests");
@@ -477,6 +479,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             throw new RuntimeException("Failed to start SAGA", e);
         }
     }
+
 
     public void debugQueueContents() {
         List<QueuedRequest> allRequests = queuedRequestRepository.findAll();

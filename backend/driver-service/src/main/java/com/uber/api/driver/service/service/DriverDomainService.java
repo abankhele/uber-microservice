@@ -12,5 +12,6 @@ public interface DriverDomainService {
     int getAvailableDriverCount();
     boolean hasAvailableDrivers();
     int getBusyDriverCount();
+    void processDriverAssignment(DriverRequestEvent driverRequest);
 
 }

@@ -27,12 +27,12 @@ public class PaymentRequestListener {
         try {
             PaymentRequestEvent paymentRequest = objectMapper.readValue(message, PaymentRequestEvent.class);
 
-            // **FIXED: Use your actual interface method**
+            // **PROCESS PAYMENT using your existing method**
             PaymentResponseEvent paymentResponse = paymentDomainService.processPayment(paymentRequest);
-            log.info("Payment processed with result: success={}", paymentResponse.isSuccess());
+            log.info("Payment processed with status: {}", paymentResponse.getStatus());
 
-            // **CRITICAL FIX: Send driver request after successful payment**
-            if (paymentResponse.isSuccess()) {
+            // **CRITICAL FIX: Send driver request after successful payment using YOUR status field**
+            if ("COMPLETED".equals(paymentResponse.getStatus().toString())) {
                 DriverRequestEvent driverRequest = DriverRequestEvent.builder()
                         .sagaId(paymentRequest.getSagaId())
                         .rideRequestId(paymentRequest.getRideRequestId())
@@ -46,7 +46,8 @@ public class PaymentRequestListener {
                 paymentDomainService.saveToOutbox(driverRequest, paymentRequest.getSagaId(), "driver-requests");
                 log.info("✅ Sent driver request for ride: {}", paymentRequest.getRideRequestId());
             } else {
-                log.warn("❌ Payment failed, not sending driver request for ride: {}", paymentRequest.getRideRequestId());
+                log.warn("❌ Payment failed with status: {}, not sending driver request for ride: {}",
+                        paymentResponse.getStatus(), paymentRequest.getRideRequestId());
             }
 
             log.info("Payment request processed successfully for ride: {}", paymentRequest.getRideRequestId());

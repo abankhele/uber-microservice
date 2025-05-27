@@ -77,7 +77,6 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
             PaymentResponseEvent response = PaymentResponseEvent.builder()
                     .sagaId(paymentRequest.getSagaId())
                     .rideRequestId(paymentRequest.getRideRequestId())
-                    .success(true)
                     .customerEmail(paymentRequest.getCustomerEmail())
                     .amount(paymentRequest.getAmount())
                     .status(PaymentStatus.COMPLETED)
@@ -133,7 +132,7 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
             PaymentResponseEvent response = PaymentResponseEvent.builder()
                     .sagaId(refundRequest.getSagaId())
                     .rideRequestId(refundRequest.getRideRequestId())
-                    .success(true)
+
                     .customerEmail(refundRequest.getCustomerEmail())
                     .amount(refundRequest.getAmount())
                     .status(PaymentStatus.COMPLETED)
@@ -241,7 +240,7 @@ public class PaymentDomainServiceImpl implements PaymentDomainService {
                 .rideRequestId(request.getRideRequestId())
                 .customerEmail(request.getCustomerEmail())
                 .amount(request.getAmount())
-                .success(true)
+
                 .status(PaymentStatus.FAILED)
                 .failureReason(failureReason)
                 .build();
