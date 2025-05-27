@@ -42,13 +42,12 @@ public class RideMatchingService {
             customer.setCurrentRideRequestId(savedRideRequest.getId());
             customerRepository.save(customer);
 
-            // **CRITICAL FIX: Use actual driver availability from database**
+            // **STEP 1: Check driver availability**
             int availableDrivers = customerDomainService.getAvailableDriverCount();
-
             log.info("Available drivers: {} for customer: {}", availableDrivers, request.getCustomerEmail());
 
             if (availableDrivers > 0) {
-                // **IMMEDIATE PROCESSING**
+                // **STEP 2: If available → Start SAGA immediately**
                 log.info("✅ IMMEDIATE PROCESSING: {} available drivers for {}", availableDrivers, request.getCustomerEmail());
 
                 customerDomainService.startSagaForRide(savedRideRequest);
@@ -63,9 +62,9 @@ public class RideMatchingService {
                         .build();
 
             } else {
-                // **QUEUE FOR LATER PROCESSING**
-                log.warn("🚫 NO AVAILABLE DRIVERS - ADDING TO QUEUE: {}", request.getCustomerEmail());
-                return addToQueue(savedRideRequest, request);
+                // **STEP 3: If not available → Add to queue (NO SAGA)**
+                log.warn("🚫 NO AVAILABLE DRIVERS - ADDING TO QUEUE (NO SAGA): {}", request.getCustomerEmail());
+                return addToQueueWithoutSaga(savedRideRequest, request);
             }
 
         } catch (Exception e) {
@@ -74,16 +73,15 @@ public class RideMatchingService {
         }
     }
 
-    // **HELPER METHOD: Extract queue logic**
-    private RideStatusResponse addToQueue(RideRequest savedRideRequest, CallTaxiRequest request) {
+    // **STEP 3: Add to queue WITHOUT starting SAGA**
+    private RideStatusResponse addToQueueWithoutSaga(RideRequest savedRideRequest, CallTaxiRequest request) {
         savedRideRequest.setStatus(RideStatus.DRIVER_SEARCHING);
         rideRequestRepository.save(savedRideRequest);
 
-        // **CRITICAL FIX: Direct queue addition with error handling**
         try {
-            log.info("🔄 ATTEMPTING TO ADD TO QUEUE: {}", request.getCustomerEmail());
+            log.info("🔄 ADDING TO QUEUE (NO SAGA): {}", request.getCustomerEmail());
             customerDomainService.addToExistingQueue(savedRideRequest);
-            log.info("✅ SUCCESSFULLY ADDED TO QUEUE: {}", request.getCustomerEmail());
+            log.info("✅ SUCCESSFULLY ADDED TO QUEUE (NO SAGA): {}", request.getCustomerEmail());
         } catch (Exception e) {
             log.error("❌ FAILED TO ADD TO QUEUE for {}: {}", request.getCustomerEmail(), e.getMessage(), e);
             throw new RuntimeException("Failed to add to queue: " + e.getMessage());
@@ -99,6 +97,7 @@ public class RideMatchingService {
                 .build();
     }
 
+    // **STEP 4: When driver available → Process queue → Start SAGA**
     public void onDriverAvailable() {
         log.info("🔄 Driver became available - triggering queue processing");
         customerDomainService.processQueuedRequests();
@@ -122,5 +121,3 @@ public class RideMatchingService {
         }
     }
 }
-
-
