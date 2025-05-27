@@ -31,6 +31,21 @@ public class RideMatchingService {
             Customer customer = findOrCreateCustomer(request.getCustomerEmail());
             validateCustomerCanCallTaxi(customer);
 
+            // **CHECK DRIVER AVAILABILITY FIRST**
+            int availableDrivers = customerDomainService.getAvailableDriverCount();
+            log.info("Available drivers: {} for customer: {}", availableDrivers, request.getCustomerEmail());
+
+            if (availableDrivers == 0) {
+                // **NO DRIVERS AVAILABLE - IMMEDIATE RESPONSE**
+                log.warn("🚫 NO DRIVERS AVAILABLE - IMMEDIATE REJECTION for {}", request.getCustomerEmail());
+
+                return RideStatusResponse.builder()
+                        .customerEmail(request.getCustomerEmail())
+                        .status(RideStatus.DRIVER_UNAVAILABLE)
+                        .statusMessage("No drivers available nearby. Please try again later.")
+                        .build();
+            }
+
             // Create ride request
             RideRequest rideRequest = customerDomainService.createRideRequestFromRequest(request);
             RideRequest savedRideRequest = rideRequestRepository.save(rideRequest);
@@ -40,7 +55,7 @@ public class RideMatchingService {
             customer.setCurrentRideRequestId(savedRideRequest.getId());
             customerRepository.save(customer);
 
-            // **SIMPLE: Always start SAGA immediately**
+            // **START SAGA IMMEDIATELY**
             log.info("✅ STARTING SAGA IMMEDIATELY for {}", request.getCustomerEmail());
             customerDomainService.startSagaForRide(savedRideRequest);
 
