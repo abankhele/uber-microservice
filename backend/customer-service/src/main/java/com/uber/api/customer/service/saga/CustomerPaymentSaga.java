@@ -46,7 +46,7 @@ public class CustomerPaymentSaga implements SagaStep<PaymentResponseEvent> {
                 log.info("Payment completed successfully for ride request: {}", paymentResponse.getRideRequestId());
 
                 // Update ride status to driver searching
-                rideRequest.setStatus(RideStatus.DRIVER_SEARCHING);
+             
                 rideRequestRepository.save(rideRequest);
 
                 // Create driver request event

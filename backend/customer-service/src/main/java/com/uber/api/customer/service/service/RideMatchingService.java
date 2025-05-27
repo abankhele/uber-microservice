@@ -25,8 +25,8 @@ public class RideMatchingService {
     private final RestTemplate restTemplate;
 
     @Transactional
-    public synchronized RideStatusResponse requestRide(CallTaxiRequest request) {
-        log.info("=== RIDE REQUEST FOR: {} ===", request.getCustomerEmail());
+    public RideStatusResponse requestRide(CallTaxiRequest request) {
+        log.info("=== SIMPLE RIDE REQUEST FOR: {} ===", request.getCustomerEmail());
 
         try {
             // Find or create customer
@@ -42,65 +42,23 @@ public class RideMatchingService {
             customer.setCurrentRideRequestId(savedRideRequest.getId());
             customerRepository.save(customer);
 
-            // **STEP 1: Check driver availability**
-            int availableDrivers = customerDomainService.getAvailableDriverCount();
-            log.info("Available drivers: {} for customer: {}", availableDrivers, request.getCustomerEmail());
+            // **SIMPLE: Always start SAGA immediately**
+            log.info("✅ STARTING SAGA IMMEDIATELY for {}", request.getCustomerEmail());
+            customerDomainService.startSagaForRide(savedRideRequest);
 
-            if (availableDrivers > 0) {
-                // **STEP 2: If available → Start SAGA immediately**
-                log.info("✅ IMMEDIATE PROCESSING: {} available drivers for {}", availableDrivers, request.getCustomerEmail());
-
-                customerDomainService.startSagaForRide(savedRideRequest);
-
-                return RideStatusResponse.builder()
-                        .rideRequestId(savedRideRequest.getId())
-                        .status(RideStatus.CREATED)
-                        .customerEmail(request.getCustomerEmail())
-                        .estimatedPrice(savedRideRequest.getEstimatedPrice())
-                        .createdAt(savedRideRequest.getCreatedAt())
-                        .statusMessage("Processing your ride request...")
-                        .build();
-
-            } else {
-                // **STEP 3: If not available → Add to queue (NO SAGA)**
-                log.warn("🚫 NO AVAILABLE DRIVERS - ADDING TO QUEUE (NO SAGA): {}", request.getCustomerEmail());
-                return addToQueueWithoutSaga(savedRideRequest, request);
-            }
+            return RideStatusResponse.builder()
+                    .rideRequestId(savedRideRequest.getId())
+                    .status(RideStatus.CREATED)
+                    .customerEmail(request.getCustomerEmail())
+                    .estimatedPrice(savedRideRequest.getEstimatedPrice())
+                    .createdAt(savedRideRequest.getCreatedAt())
+                    .statusMessage("Processing your ride request...")
+                    .build();
 
         } catch (Exception e) {
             log.error("❌ ERROR processing ride request for {}: {}", request.getCustomerEmail(), e.getMessage());
             throw new RuntimeException("Failed to process ride request: " + e.getMessage());
         }
-    }
-
-    // **STEP 3: Add to queue WITHOUT starting SAGA**
-    private RideStatusResponse addToQueueWithoutSaga(RideRequest savedRideRequest, CallTaxiRequest request) {
-        savedRideRequest.setStatus(RideStatus.DRIVER_SEARCHING);
-        rideRequestRepository.save(savedRideRequest);
-
-        try {
-            log.info("🔄 ADDING TO QUEUE (NO SAGA): {}", request.getCustomerEmail());
-            customerDomainService.addToExistingQueue(savedRideRequest);
-            log.info("✅ SUCCESSFULLY ADDED TO QUEUE (NO SAGA): {}", request.getCustomerEmail());
-        } catch (Exception e) {
-            log.error("❌ FAILED TO ADD TO QUEUE for {}: {}", request.getCustomerEmail(), e.getMessage(), e);
-            throw new RuntimeException("Failed to add to queue: " + e.getMessage());
-        }
-
-        return RideStatusResponse.builder()
-                .rideRequestId(savedRideRequest.getId())
-                .status(RideStatus.DRIVER_SEARCHING)
-                .customerEmail(request.getCustomerEmail())
-                .estimatedPrice(savedRideRequest.getEstimatedPrice())
-                .createdAt(savedRideRequest.getCreatedAt())
-                .statusMessage("All drivers are busy. You're in queue for the next available driver.")
-                .build();
-    }
-
-    // **STEP 4: When driver available → Process queue → Start SAGA**
-    public void onDriverAvailable() {
-        log.info("🔄 Driver became available - triggering queue processing");
-        customerDomainService.processQueuedRequests();
     }
 
     private Customer findOrCreateCustomer(String email) {

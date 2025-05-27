@@ -1,7 +1,6 @@
 package com.uber.api.customer.service.messaging;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.uber.api.customer.service.repository.QueuedRequestRepository;
 import com.uber.api.customer.service.repository.RideRequestRepository;
 import com.uber.api.customer.service.repository.CustomerRepository;
 import com.uber.api.shared.constants.CustomerStatus;
@@ -24,7 +23,7 @@ public class DriverResponseListener {
     private final RideRequestRepository rideRequestRepository;
     private final CustomerRepository customerRepository;
     private final ObjectMapper objectMapper;
-    private final QueuedRequestRepository queuedRequestRepository;
+
 
     @PostConstruct
     public void init() {
@@ -61,12 +60,6 @@ public class DriverResponseListener {
                     log.info("👤 Updated customer {} status to ON_RIDE", customer.getEmail());
                 });
 
-                // **CRITICAL FIX: Mark queue entry as completed**
-                queuedRequestRepository.findByRideRequestId(driverResponse.getRideRequestId()).ifPresent(queuedRequest -> {
-                    queuedRequest.setStatus("COMPLETED");
-                    queuedRequestRepository.save(queuedRequest);
-                    log.info("✅ Marked queue entry as COMPLETED for ride: {}", driverResponse.getRideRequestId());
-                });
 
             } else {
                 // Driver rejected or no driver available
@@ -82,12 +75,6 @@ public class DriverResponseListener {
                     customerRepository.save(customer);
                 });
 
-                // **RESET QUEUE ENTRY FOR RETRY**
-                queuedRequestRepository.findByRideRequestId(driverResponse.getRideRequestId()).ifPresent(queuedRequest -> {
-                    queuedRequest.setStatus("QUEUED");
-                    queuedRequestRepository.save(queuedRequest);
-                    log.info("🔄 Reset queue entry to QUEUED for retry: {}", driverResponse.getRideRequestId());
-                });
             }
 
             log.info("✅ Driver response processed successfully for ride: {}", driverResponse.getRideRequestId());

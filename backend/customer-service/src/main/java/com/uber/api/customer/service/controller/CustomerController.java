@@ -2,7 +2,6 @@ package com.uber.api.customer.service.controller;
 
 import com.uber.api.customer.service.dto.CallTaxiRequest;
 import com.uber.api.customer.service.dto.RideStatusResponse;
-import com.uber.api.customer.service.repository.QueuedRequestRepository;
 import com.uber.api.customer.service.service.CustomerDomainService;
 import com.uber.api.customer.service.service.RideMatchingService;
 import com.uber.api.shared.entities.QueuedRequest;
@@ -24,7 +23,6 @@ public class CustomerController {
 
     private final CustomerDomainService customerDomainService;
     private final RideMatchingService rideMatchingService;
-    private final QueuedRequestRepository queuedRequestRepository;
 
     @PostMapping("/call")
     public ResponseEntity<RideStatusResponse> callTaxi(@Valid @RequestBody CallTaxiRequest request) {
@@ -46,15 +44,7 @@ public class CustomerController {
         }
     }
 
-    @GetMapping("/debug/queue-contents")
-    public ResponseEntity<String> debugQueueContents() {
-        try {
-            customerDomainService.debugQueueContents();
-            return ResponseEntity.ok("Queue contents logged - check console");
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Error: " + e.getMessage());
-        }
-    }
+
 
 
 
@@ -115,50 +105,6 @@ public class CustomerController {
         } catch (Exception e) {
             log.error("Error cancelling ride for customer: {}", customerEmail, e);
             return ResponseEntity.badRequest().body("Failed to cancel ride: " + e.getMessage());
-        }
-    }
-
-    @GetMapping("/debug/queue-check")
-    public ResponseEntity<String> debugQueueCheck() {
-        try {
-            List<QueuedRequest> allRequests = queuedRequestRepository.findAll();
-            StringBuilder result = new StringBuilder("=== QUEUE DEBUG ===\n");
-
-            result.append("Total requests in queue table: ").append(allRequests.size()).append("\n");
-
-            for (QueuedRequest request : allRequests) {
-                result.append(String.format("ID: %s, Customer: %s, Status: %s\n",
-                        request.getId(), request.getCustomerEmail(), request.getStatus()));
-            }
-
-            List<QueuedRequest> queuedOnly = queuedRequestRepository.findQueuedRequestsOrderedByPriority();
-            result.append("\nRequests with status 'QUEUED': ").append(queuedOnly.size()).append("\n");
-
-            return ResponseEntity.ok(result.toString());
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Error: " + e.getMessage());
-        }
-    }
-    @GetMapping("/debug/queue-detailed")
-    public ResponseEntity<String> debugQueueDetailed() {
-        try {
-            List<QueuedRequest> allRequests = queuedRequestRepository.findAll();
-            StringBuilder result = new StringBuilder("=== DETAILED QUEUE DEBUG ===\n");
-
-            result.append("Total requests in queue table: ").append(allRequests.size()).append("\n\n");
-
-            for (QueuedRequest request : allRequests) {
-                result.append(String.format("ID: %s\nCustomer: %s\nStatus: %s\nQueued At: %s\nExpires At: %s\n\n",
-                        request.getId(), request.getCustomerEmail(), request.getStatus(),
-                        request.getQueuedAt(), request.getExpiresAt()));
-            }
-
-            List<QueuedRequest> queuedOnly = queuedRequestRepository.findQueuedRequestsOrderedByPriority();
-            result.append("Requests with status 'QUEUED': ").append(queuedOnly.size()).append("\n");
-
-            return ResponseEntity.ok(result.toString());
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Error: " + e.getMessage());
         }
     }
 

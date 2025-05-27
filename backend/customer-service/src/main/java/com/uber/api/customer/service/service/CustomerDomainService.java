@@ -11,15 +11,13 @@ public interface CustomerDomainService {
     void startRide(String customerEmail);
     void cancelRide(String customerEmail);
     void processExpiredRequests();
-    void processQueuedRequests();
-    void debugQueueOrder();
+
 
     // **NEW METHODS for RideMatchingService integration**
     RideRequest createRideRequestFromRequest(CallTaxiRequest request);
-    void addToExistingQueue(RideRequest rideRequest);
+
     void startSagaForRide(RideRequest rideRequest);
 
-    void debugQueueContents();
     int getAvailableDriverCount();
 
 }
