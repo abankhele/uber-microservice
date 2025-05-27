@@ -14,8 +14,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
 
-import java.util.concurrent.atomic.AtomicInteger;
-
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -26,12 +24,8 @@ public class RideMatchingService {
     private final RideRequestRepository rideRequestRepository;
     private final RestTemplate restTemplate;
 
-    // **FIXED: Use atomic counter to track processing requests**
-    private static final AtomicInteger processingRequests = new AtomicInteger(0);
-    private static final int MAX_DRIVERS = 3;
-
     @Transactional
-    public RideStatusResponse requestRide(CallTaxiRequest request) {
+    public synchronized RideStatusResponse requestRide(CallTaxiRequest request) {
         log.info("=== RIDE REQUEST FOR: {} ===", request.getCustomerEmail());
 
         try {
@@ -48,16 +42,14 @@ public class RideMatchingService {
             customer.setCurrentRideRequestId(savedRideRequest.getId());
             customerRepository.save(customer);
 
-            // **FIXED LOGIC: Use atomic counter for immediate capacity check**
-            int currentProcessing = processingRequests.get();
+            // **CRITICAL FIX: Use actual driver availability from database**
+            int availableDrivers = customerDomainService.getAvailableDriverCount();
 
-            log.info("Current processing requests: {}, Max drivers: {} for customer: {}",
-                    currentProcessing, MAX_DRIVERS, request.getCustomerEmail());
+            log.info("Available drivers: {} for customer: {}", availableDrivers, request.getCustomerEmail());
 
-            if (currentProcessing < MAX_DRIVERS) {
+            if (availableDrivers > 0) {
                 // **IMMEDIATE PROCESSING**
-                int slot = processingRequests.incrementAndGet();
-                log.info("✅ IMMEDIATE PROCESSING: Slot {} for {}", slot, request.getCustomerEmail());
+                log.info("✅ IMMEDIATE PROCESSING: {} available drivers for {}", availableDrivers, request.getCustomerEmail());
 
                 customerDomainService.startSagaForRide(savedRideRequest);
 
@@ -71,30 +63,9 @@ public class RideMatchingService {
                         .build();
 
             } else {
-                // **QUEUE FOR LATER PROCESSING WITH DETAILED LOGGING**
-                log.warn("🚫 ALL SLOTS TAKEN - ADDING TO QUEUE: {}", request.getCustomerEmail());
-
-                savedRideRequest.setStatus(RideStatus.DRIVER_SEARCHING);
-                rideRequestRepository.save(savedRideRequest);
-
-                // **CRITICAL FIX: Direct queue addition with error handling**
-                try {
-                    log.info("🔄 ATTEMPTING TO ADD TO QUEUE: {}", request.getCustomerEmail());
-                    customerDomainService.addToExistingQueue(savedRideRequest);
-                    log.info("✅ SUCCESSFULLY ADDED TO QUEUE: {}", request.getCustomerEmail());
-                } catch (Exception e) {
-                    log.error("❌ FAILED TO ADD TO QUEUE for {}: {}", request.getCustomerEmail(), e.getMessage(), e);
-                    throw new RuntimeException("Failed to add to queue: " + e.getMessage());
-                }
-
-                return RideStatusResponse.builder()
-                        .rideRequestId(savedRideRequest.getId())
-                        .status(RideStatus.DRIVER_SEARCHING)
-                        .customerEmail(request.getCustomerEmail())
-                        .estimatedPrice(savedRideRequest.getEstimatedPrice())
-                        .createdAt(savedRideRequest.getCreatedAt())
-                        .statusMessage("All drivers are busy. You're in queue for the next available driver.")
-                        .build();
+                // **QUEUE FOR LATER PROCESSING**
+                log.warn("🚫 NO AVAILABLE DRIVERS - ADDING TO QUEUE: {}", request.getCustomerEmail());
+                return addToQueue(savedRideRequest, request);
             }
 
         } catch (Exception e) {
@@ -103,14 +74,34 @@ public class RideMatchingService {
         }
     }
 
+    // **HELPER METHOD: Extract queue logic**
+    private RideStatusResponse addToQueue(RideRequest savedRideRequest, CallTaxiRequest request) {
+        savedRideRequest.setStatus(RideStatus.DRIVER_SEARCHING);
+        rideRequestRepository.save(savedRideRequest);
+
+        // **CRITICAL FIX: Direct queue addition with error handling**
+        try {
+            log.info("🔄 ATTEMPTING TO ADD TO QUEUE: {}", request.getCustomerEmail());
+            customerDomainService.addToExistingQueue(savedRideRequest);
+            log.info("✅ SUCCESSFULLY ADDED TO QUEUE: {}", request.getCustomerEmail());
+        } catch (Exception e) {
+            log.error("❌ FAILED TO ADD TO QUEUE for {}: {}", request.getCustomerEmail(), e.getMessage(), e);
+            throw new RuntimeException("Failed to add to queue: " + e.getMessage());
+        }
+
+        return RideStatusResponse.builder()
+                .rideRequestId(savedRideRequest.getId())
+                .status(RideStatus.DRIVER_SEARCHING)
+                .customerEmail(request.getCustomerEmail())
+                .estimatedPrice(savedRideRequest.getEstimatedPrice())
+                .createdAt(savedRideRequest.getCreatedAt())
+                .statusMessage("All drivers are busy. You're in queue for the next available driver.")
+                .build();
+    }
+
     public void onDriverAvailable() {
         log.info("🔄 Driver became available - triggering queue processing");
         customerDomainService.processQueuedRequests();
-    }
-
-    public static void releaseSlot(String customerEmail) {
-        int remaining = processingRequests.decrementAndGet();
-        log.info("🔓 Released slot for {} - remaining: {}", customerEmail, remaining);
     }
 
     private Customer findOrCreateCustomer(String email) {

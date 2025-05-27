@@ -14,6 +14,8 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import jakarta.annotation.PostConstruct;
+
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -24,7 +26,12 @@ public class DriverResponseListener {
     private final ObjectMapper objectMapper;
     private final QueuedRequestRepository queuedRequestRepository;
 
-    @KafkaListener(topics = "driver-responses", groupId = "customer-service-group")
+    @PostConstruct
+    public void init() {
+        log.info("🔧 DriverResponseListener initialized and ready to receive driver responses");
+    }
+
+    @KafkaListener(topics = "driver-responses", groupId = "customer-driver-response-group")
     @Transactional
     public void handleDriverResponse(String message) {
         log.info("🔄 RECEIVED DRIVER RESPONSE: {}", message);

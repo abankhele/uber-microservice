@@ -14,8 +14,9 @@ import java.util.UUID;
 public interface QueuedRequestRepository extends JpaRepository<QueuedRequest, UUID> {
 
     // **CRITICAL FIX: Correct FIFO ordering by queuedAt timestamp**
-    @Query("SELECT q FROM QueuedRequest q WHERE q.status = 'QUEUED' ORDER BY q.queuedAt ASC")
+    @Query("SELECT q FROM QueuedRequest q WHERE q.status = 'QUEUED' ORDER BY q.queuedAt ASC, q.id ASC")
     List<QueuedRequest> findQueuedRequestsOrderedByPriority();
+
 
     List<QueuedRequest> findByStatusAndExpiresAtBefore(String status, ZonedDateTime expireTime);
 
@@ -30,5 +31,5 @@ public interface QueuedRequestRepository extends JpaRepository<QueuedRequest, UU
     @Query("SELECT q FROM QueuedRequest q WHERE q.status = 'QUEUED' ORDER BY q.queuedAt ASC")
     List<QueuedRequest> findQueuedRequestsInFIFOOrder();
 
-
+    List<QueuedRequest> findByStatus(String status);
 }

@@ -16,7 +16,7 @@ public class PaymentResponseListener {
     private final CustomerPaymentSaga customerPaymentSaga;
     private final ObjectMapper objectMapper;
 
-    @KafkaListener(topics = "payment-responses", groupId = "customer-service-group")
+    @KafkaListener(topics = "payment-responses", groupId = "customer-payment-response-group")
     public void handlePaymentResponse(String message) {
         log.info("Received payment response: {}", message);
 

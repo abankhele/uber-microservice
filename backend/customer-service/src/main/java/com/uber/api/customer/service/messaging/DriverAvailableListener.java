@@ -15,7 +15,7 @@ public class DriverAvailableListener {
     private final CustomerDomainService customerDomainService;
     private final RideMatchingService rideMatchingService;
 
-    @KafkaListener(topics = "driver-available", groupId = "customer-service-group")
+    @KafkaListener(topics = "driver-available", groupId = "customer-driver-available-group")
     public void handleDriverAvailable(String driverEmail) {
         log.info("🔄 DRIVER AVAILABLE EVENT RECEIVED: {}", driverEmail);
 

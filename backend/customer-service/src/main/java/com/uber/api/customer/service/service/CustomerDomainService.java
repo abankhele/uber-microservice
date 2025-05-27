@@ -20,4 +20,6 @@ public interface CustomerDomainService {
     void startSagaForRide(RideRequest rideRequest);
 
     void debugQueueContents();
+    int getAvailableDriverCount();
+
 }
