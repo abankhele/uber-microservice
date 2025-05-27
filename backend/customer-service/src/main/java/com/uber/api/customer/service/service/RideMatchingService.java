@@ -12,7 +12,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.client.RestTemplate;
 
 @Slf4j
 @Service
@@ -22,7 +21,6 @@ public class RideMatchingService {
     private final CustomerDomainService customerDomainService;
     private final CustomerRepository customerRepository;
     private final RideRequestRepository rideRequestRepository;
-    private final RestTemplate restTemplate;
 
     @Transactional
     public RideStatusResponse requestRide(CallTaxiRequest request) {

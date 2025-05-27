@@ -52,10 +52,12 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         RideRequest currentRide = rideRequestRepository
                 .findByCustomerEmailAndStatus(customerEmail, RideStatus.CREATED)
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.PAYMENT_PROCESSING))
+                .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.DRIVER_SEARCHING))
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.DRIVER_ASSIGNED))
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.RIDE_STARTED))
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.CANCELLED))
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.EXPIRED))
+                .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.DRIVER_UNAVAILABLE))
                 .orElse(null);
 
         if (currentRide == null) {
@@ -77,6 +79,7 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         RideRequest activeRide = rideRequestRepository
                 .findByCustomerEmailAndStatus(customerEmail, RideStatus.CREATED)
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.PAYMENT_PROCESSING))
+                .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.DRIVER_SEARCHING))
                 .or(() -> rideRequestRepository.findByCustomerEmailAndStatus(customerEmail, RideStatus.DRIVER_ASSIGNED))
                 .orElseThrow(() -> new RuntimeException("No cancellable ride found for customer: " + customerEmail));
 
@@ -140,23 +143,9 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
     }
 
     @Override
-    @Transactional
-    public void processExpiredRequests() {
-        ZonedDateTime now = ZonedDateTime.now();
-        log.info("=== PROCESSING EXPIRED REQUESTS ===");
-        // Since we removed queuing, this method is now simplified
-        // In a queue-less system, expired requests would be handled differently
-        log.info("No expired requests to process in queue-less system");
-    }
-
-
-
-
-    @Override
     public RideRequest createRideRequestFromRequest(CallTaxiRequest request) {
         return createRideRequest(request);
     }
-
 
     @Override
     public void startSagaForRide(RideRequest rideRequest) {
@@ -180,8 +169,6 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
             throw new RuntimeException("Failed to start SAGA", e);
         }
     }
-
-
 
     @Override
     public int getAvailableDriverCount() {
@@ -264,12 +251,12 @@ public class CustomerDomainServiceImpl implements CustomerDomainService {
         return switch (status) {
             case CREATED -> "Ride request created";
             case PAYMENT_PROCESSING -> "Processing payment...";
-
+            case DRIVER_SEARCHING -> "Looking for available driver...";
             case DRIVER_ASSIGNED -> "Driver assigned and on the way!";
             case RIDE_STARTED -> "Ride in progress";
             case RIDE_COMPLETED -> "Ride completed";
             case PAYMENT_FAILED -> "Payment failed. Please try again.";
-            case DRIVER_UNAVAILABLE -> "No drivers available nearby";
+            case DRIVER_UNAVAILABLE -> "No drivers available nearby. Please try again later.";
             case CANCELLED -> "Ride cancelled";
             case EXPIRED -> "Request expired";
             default -> "Unknown status";

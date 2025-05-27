@@ -4,7 +4,6 @@ import com.uber.api.customer.service.dto.CallTaxiRequest;
 import com.uber.api.customer.service.dto.RideStatusResponse;
 import com.uber.api.customer.service.service.CustomerDomainService;
 import com.uber.api.customer.service.service.RideMatchingService;
-import com.uber.api.shared.entities.QueuedRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -12,13 +11,11 @@ import org.springframework.web.bind.annotation.*;
 
 import jakarta.validation.Valid;
 
-import java.util.List;
-
 @Slf4j
 @RestController
 @RequestMapping("/api/customer")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "*") // For development only
+@CrossOrigin(origins = "*")
 public class CustomerController {
 
     private final CustomerDomainService customerDomainService;
@@ -29,7 +26,6 @@ public class CustomerController {
         log.info("Received taxi call request from customer: {}", request.getCustomerEmail());
 
         try {
-            // **USE RideMatchingService for intelligent routing**
             RideStatusResponse response = rideMatchingService.requestRide(request);
             log.info("Taxi call request processed successfully for customer: {}", request.getCustomerEmail());
             return ResponseEntity.ok(response);
@@ -43,10 +39,6 @@ public class CustomerController {
                             .build());
         }
     }
-
-
-
-
 
     @GetMapping("/status/{customerEmail}")
     public ResponseEntity<RideStatusResponse> getRideStatus(@PathVariable String customerEmail) {
@@ -107,8 +99,6 @@ public class CustomerController {
             return ResponseEntity.badRequest().body("Failed to cancel ride: " + e.getMessage());
         }
     }
-
-
 
     @GetMapping("/health")
     public ResponseEntity<String> health() {

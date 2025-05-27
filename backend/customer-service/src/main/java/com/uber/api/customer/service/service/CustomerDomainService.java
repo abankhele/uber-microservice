@@ -10,14 +10,9 @@ public interface CustomerDomainService {
     void completeRide(String customerEmail);
     void startRide(String customerEmail);
     void cancelRide(String customerEmail);
-    void processExpiredRequests();
 
-
-    // **NEW METHODS for RideMatchingService integration**
+    // **SIMPLE METHODS - NO QUEUE**
     RideRequest createRideRequestFromRequest(CallTaxiRequest request);
-
     void startSagaForRide(RideRequest rideRequest);
-
     int getAvailableDriverCount();
-
 }
