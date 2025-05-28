@@ -130,8 +130,3 @@ Customer Service ←→ Payment Service ←→ Driver Service
 * **Circuit Breaker**: Resilience against downstream failures
 * **Optimistic Locking**: Concurrency control
 
----
-
-## 📄 License
-
-This project is released under the MIT License. See [LICENSE](LICENSE) for details.
